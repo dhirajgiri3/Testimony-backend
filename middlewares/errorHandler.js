@@ -57,6 +57,34 @@ export const errorHandler = (err, req, res, next) => {
   res.status(statusCode).json(errorResponse);
 };
 
+/**
+ * Handle validation errors
+ */
+export const handleValidationError = (err, req, res, next) => {
+  if (err.name === 'ValidationError') {
+    const validationErrors = Object.values(err.errors || {}).map((e) => ({
+      field: e.path,
+      message: e.message,
+    }));
+
+    const errorResponse = {
+      success: false,
+      error: {
+        type: 'ValidationError',
+        code: 'ERR_400',
+        message: 'Validation failed',
+        validationErrors,
+      },
+      requestId: req.id,
+      timestamp: new Date().toISOString(),
+    };
+
+    return res.status(400).json(errorResponse);
+  }
+
+  next(err);
+};
+
 export const handleNotFound = (req, res, next) => {
   next(new AppError(`Not found - ${req.originalUrl}`, 404));
 };

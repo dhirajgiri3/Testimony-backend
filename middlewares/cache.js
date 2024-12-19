@@ -1,5 +1,3 @@
-// src/middlewares/cache.js
-
 import { redis } from "../config/redis.js";
 import AppError from "../utils/appError.js";
 import { logger } from "../utils/logger.js";
@@ -133,3 +131,18 @@ export const {
   delete: delCache,
   generateKey: generateCacheKey,
 } = cacheManager;
+
+/**
+ * Invalidate cache for specific keys
+ */
+export const invalidateCache = async (keys) => {
+  try {
+    if (!Array.isArray(keys)) {
+      keys = [keys];
+    }
+    await Promise.all(keys.map((key) => redis.del(key)));
+    logger.info(`✅ Cache invalidated for keys: ${keys.join(", ")}`);
+  } catch (error) {
+    logger.error("❌ Cache invalidation error:", error);
+  }
+};

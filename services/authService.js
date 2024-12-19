@@ -310,3 +310,85 @@ export const verifyLoginOTPService = async (phone, code, req) => {
 
     return { accessToken, refreshToken, user };
 };
+
+/**
+ * Handle password reset request
+ * @param {string} email
+ * @returns {void}
+ */
+export const initiatePasswordReset = async (email) => {
+    const user = await User.findOne({ email: email.toLowerCase() });
+
+    if (!user) {
+        throw createError('notFound', 'User not found', 404);
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+    user.passwordResetToken = resetTokenHash;
+    user.passwordResetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour
+    await user.save({ validateBeforeSave: false });
+
+    // Send reset email
+    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+    
+    await sendEmail({
+        to: user.email,
+        subject: 'Password Reset Request',
+        template: 'passwordReset',
+        context: {
+            resetUrl
+        }
+    });
+
+    // Log the password reset request
+    await ActivityLog.create({
+        user: user.id,
+        action: "PASSWORD_RESET_REQUEST",
+        details: {
+            ip: user.lastLoginIP || 'Unknown',
+            userAgent: user.lastLoginUserAgent || 'Unknown'
+        }
+    });
+
+    logger.info(`Password reset initiated for user: ${user.id}`);
+};
+
+/**
+ * Complete password reset
+ * @param {string} token
+ * @param {string} newPassword
+ * @returns {Object} updated user
+ */
+export const resetPassword = async (token, newPassword) => {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    
+    const user = await User.findOne({
+        passwordResetToken: tokenHash,
+        passwordResetTokenExpiry: { $gt: Date.now() }
+    });
+
+    if (!user) {
+        throw createError('validation', 'Invalid or expired password reset token', 400);
+    }
+
+    user.password = newPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetTokenExpiry = undefined;
+    await user.save();
+
+    // Log the password reset
+    await ActivityLog.create({
+        user: user.id,
+        action: "PASSWORD_RESET",
+        details: {
+            ip: user.lastLoginIP || 'Unknown',
+            userAgent: user.lastLoginUserAgent || 'Unknown'
+        }
+    });
+
+    logger.info(`Password reset successful for user: ${user.id}`);
+    return user;
+};
