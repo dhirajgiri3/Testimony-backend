@@ -1,5 +1,4 @@
 // src/utils/validation.js
-
 import validator from 'validator';
 import xss from 'xss';
 import { logger } from './logger.js';
