@@ -17,9 +17,15 @@ const passportConfig = () => {
         clientSecret: process.env.GOOGLE_CLIENT_SECRET,
         callbackURL: `${process.env.SERVER_URL}/api/v1/auth/google/callback`,
         passReqToCallback: true,
+        state: true, // Enable state parameter
       },
       async (request, accessToken, refreshToken, profile, done) => {
         try {
+          // Validate state parameter to prevent CSRF
+          if (request.query.state !== request.session.oauthState) {
+            throw new Error("Invalid OAuth state");
+          }
+
           let user = await User.findOne({ email: profile.email });
 
           if (user) {

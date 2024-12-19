@@ -1,18 +1,13 @@
 import User from "../models/User.js";
 import AppError from "../utils/appError.js";
 import { logger } from "../utils/logger.js";
-import { createHash } from 'crypto';
+import { createHash } from "crypto";
 import ActivityLog from "../models/ActivityLog.js";
 import UserPreference from "../models/UserPreference.js";
 import UserSetting from "../models/UserSetting.js";
-import crypto from 'crypto';
+import crypto from "crypto";
 import { sendEmail } from "../config/email.js";
 import { validatePasswordStrength } from "../utils/inputValidation.js";
-import rateLimit from 'express-rate-limit';
-import csrf from 'csurf';
-
-// Initialize CSRF protection
-const csrfProtection = csrf({ cookie: true });
 
 /**
  * Get current user
@@ -35,7 +30,7 @@ export const getUserById = async (userId) => {
     .select("-password")
     .populate("preferences")
     .populate("settings");
-  
+
   if (!user) {
     throw new AppError("User not found", 404);
   }
@@ -51,23 +46,28 @@ export const updateUserProfile = async (userId, updateData) => {
     const sensitiveFieldsChanged = new Set();
 
     // Handle name updates
-    if (updateData.firstName) updatedFields.firstName = updateData.firstName.trim();
-    if (updateData.lastName) updatedFields.lastName = updateData.lastName.trim();
+    if (updateData.firstName)
+      updatedFields.firstName = updateData.firstName.trim();
+    if (updateData.lastName)
+      updatedFields.lastName = updateData.lastName.trim();
 
     // Handle email update with verification
     if (updateData.email && updateData.email !== updateData.currentEmail) {
-      const emailExists = await User.findOne({ email: updateData.email.toLowerCase() });
+      const emailExists = await User.findOne({
+        email: updateData.email.toLowerCase(),
+      });
       if (emailExists) {
         throw new AppError("Email already in use", 400);
       }
       updatedFields.email = updateData.email.toLowerCase();
       updatedFields.isEmailVerified = false;
-      sensitiveFieldsChanged.add('email');
-      
+      sensitiveFieldsChanged.add("email");
+
       const verificationToken = generateVerificationToken();
       updatedFields.emailVerificationToken = verificationToken.hash;
-      updatedFields.emailVerificationTokenExpiry = Date.now() + 24 * 60 * 60 * 1000;
-      
+      updatedFields.emailVerificationTokenExpiry =
+        Date.now() + 24 * 60 * 60 * 1000;
+
       // Send verification email
       await sendVerificationEmail(updateData.email, verificationToken.token);
     }
@@ -80,27 +80,28 @@ export const updateUserProfile = async (userId, updateData) => {
       }
       updatedFields.phone = updateData.phone;
       updatedFields.isPhoneVerified = false;
-      sensitiveFieldsChanged.add('phone');
+      sensitiveFieldsChanged.add("phone");
     }
 
     // Handle password update with strength validation
     if (updateData.password) {
       validatePasswordStrength(updateData.password);
       updatedFields.password = await bcrypt.hash(updateData.password, 12);
-      sensitiveFieldsChanged.add('password');
+      sensitiveFieldsChanged.add("password");
     }
 
     // Handle profile enhancements
     if (updateData.bio) updatedFields.bio = updateData.bio;
     if (updateData.location) updatedFields.location = updateData.location;
-    if (updateData.socialLinks) updatedFields.socialLinks = updateData.socialLinks;
+    if (updateData.socialLinks)
+      updatedFields.socialLinks = updateData.socialLinks;
     if (updateData.skills) updatedFields.skills = updateData.skills;
 
     const user = await User.findByIdAndUpdate(
       userId,
-      { 
+      {
         ...updatedFields,
-        lastUpdated: Date.now()
+        lastUpdated: Date.now(),
       },
       {
         new: true,
@@ -118,8 +119,8 @@ export const updateUserProfile = async (userId, updateData) => {
       action: "PROFILE_UPDATE",
       details: {
         sensitiveFieldsChanged: Array.from(sensitiveFieldsChanged),
-        fieldsUpdated: Object.keys(updatedFields)
-      }
+        fieldsUpdated: Object.keys(updatedFields),
+      },
     });
 
     return user;
@@ -135,7 +136,7 @@ export const updateUserProfile = async (userId, updateData) => {
 export const updateUserPreferences = async (userId, preferences) => {
   try {
     let userPrefs = await UserPreference.findOne({ user: userId });
-    
+
     if (!userPrefs) {
       userPrefs = new UserPreference({ user: userId });
     }
@@ -144,7 +145,7 @@ export const updateUserPreferences = async (userId, preferences) => {
     if (preferences.notifications) {
       userPrefs.notifications = {
         ...userPrefs.notifications,
-        ...preferences.notifications
+        ...preferences.notifications,
       };
     }
 
@@ -152,7 +153,7 @@ export const updateUserPreferences = async (userId, preferences) => {
     if (preferences.privacy) {
       userPrefs.privacy = {
         ...userPrefs.privacy,
-        ...preferences.privacy
+        ...preferences.privacy,
       };
     }
 
@@ -160,7 +161,7 @@ export const updateUserPreferences = async (userId, preferences) => {
     if (preferences.display) {
       userPrefs.display = {
         ...userPrefs.display,
-        ...preferences.display
+        ...preferences.display,
       };
     }
 
@@ -178,7 +179,7 @@ export const updateUserPreferences = async (userId, preferences) => {
 export const updateUserSettings = async (userId, settings) => {
   try {
     let userSettings = await UserSetting.findOne({ user: userId });
-    
+
     if (!userSettings) {
       userSettings = new UserSetting({ user: userId });
     }
@@ -223,10 +224,10 @@ export const deleteUserAccount = async (userId) => {
     try {
       // Remove user preferences
       await UserPreference.deleteOne({ user: userId }).session(session);
-      
+
       // Remove user settings
       await UserSetting.deleteOne({ user: userId }).session(session);
-      
+
       // Archive activity logs
       await ActivityLog.updateMany(
         { user: userId },
@@ -274,21 +275,21 @@ export const exportUserData = async (userId) => {
 
 // Helper functions
 const generateVerificationToken = () => {
-  const token = crypto.randomBytes(32).toString('hex');
-  const hash = createHash('sha256').update(token).digest('hex');
+  const token = crypto.randomBytes(32).toString("hex");
+  const hash = createHash("sha256").update(token).digest("hex");
   return { token, hash };
 };
 
 const sendVerificationEmail = async (email, token) => {
   const verificationUrl = `${process.env.CLIENT_URL}/verify-email?token=${token}`;
-  
+
   await sendEmail({
     to: email,
-    subject: 'Verify Your Email',
-    template: 'emailVerification',
+    subject: "Verify Your Email",
+    template: "emailVerification",
     context: {
-      verificationUrl
-    }
+      verificationUrl,
+    },
   });
 };
 
@@ -305,8 +306,11 @@ export const initiatePasswordReset = async (email) => {
   }
 
   // Generate reset token
-  const resetToken = crypto.randomBytes(32).toString('hex');
-  const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+  const resetToken = crypto.randomBytes(32).toString("hex");
+  const resetTokenHash = crypto
+    .createHash("sha256")
+    .update(resetToken)
+    .digest("hex");
 
   user.passwordResetToken = resetTokenHash;
   user.passwordResetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour
@@ -314,14 +318,14 @@ export const initiatePasswordReset = async (email) => {
 
   // Send reset email
   const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
-  
+
   await sendEmail({
     to: user.email,
-    subject: 'Password Reset Request',
-    template: 'passwordReset',
+    subject: "Password Reset Request",
+    template: "passwordReset",
     context: {
-      resetUrl
-    }
+      resetUrl,
+    },
   });
 
   // Log the password reset request
@@ -329,9 +333,9 @@ export const initiatePasswordReset = async (email) => {
     user: user.id,
     action: "PASSWORD_RESET_REQUEST",
     details: {
-      ip: user.lastLoginIP || 'Unknown',
-      userAgent: user.lastLoginUserAgent || 'Unknown'
-    }
+      ip: user.lastLoginIP || "Unknown",
+      userAgent: user.lastLoginUserAgent || "Unknown",
+    },
   });
 
   logger.info(`Password reset initiated for user: ${user.id}`);
@@ -344,11 +348,11 @@ export const initiatePasswordReset = async (email) => {
  * @returns {Object} updated user
  */
 export const resetPassword = async (token, newPassword) => {
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
   const user = await User.findOne({
     passwordResetToken: tokenHash,
-    passwordResetTokenExpiry: { $gt: Date.now() }
+    passwordResetTokenExpiry: { $gt: Date.now() },
   });
 
   if (!user) {
@@ -365,66 +369,13 @@ export const resetPassword = async (token, newPassword) => {
     user: user.id,
     action: "PASSWORD_RESET",
     details: {
-      ip: user.lastLoginIP || 'Unknown',
-      userAgent: user.lastLoginUserAgent || 'Unknown'
-    }
+      ip: user.lastLoginIP || "Unknown",
+      userAgent: user.lastLoginUserAgent || "Unknown",
+    },
   });
 
   logger.info(`Password reset successful for user: ${user.id}`);
   return user;
-};
-
-/**
- * Enable Two-Factor Authentication (2FA)
- * @param {string} userId
- * @param {string} method
- * @returns {void}
- */
-export const enableTwoFactorAuth = async (userId, method) => {
-  const user = await User.findById(userId);
-  
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
-
-  user.twoFactorEnabled = true;
-  user.twoFactorMethod = method;
-  await user.save();
-
-  // Log the 2FA setup
-  await ActivityLog.create({
-    user: userId,
-    action: "TWO_FACTOR_ENABLED",
-    details: { method }
-  });
-
-  logger.info(`Two-Factor Authentication enabled for user: ${userId}`);
-};
-
-/**
- * Disable Two-Factor Authentication (2FA)
- * @param {string} userId
- * @returns {void}
- */
-export const disableTwoFactorAuth = async (userId) => {
-  const user = await User.findById(userId);
-  
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
-
-  user.twoFactorEnabled = false;
-  user.twoFactorMethod = undefined;
-  await user.save();
-
-  // Log the 2FA disable
-  await ActivityLog.create({
-    user: userId,
-    action: "TWO_FACTOR_DISABLED",
-    details: {}
-  });
-
-  logger.info(`Two-Factor Authentication disabled for user: ${userId}`);
 };
 
 /**
@@ -436,7 +387,11 @@ export const disableTwoFactorAuth = async (userId) => {
  */
 export const uploadProfilePicture = async (userId, imageBuffer, imageType) => {
   // Implement image upload logic, e.g., upload to S3
-  const imageUrl = await uploadToS3(imageBuffer, imageType, `profiles/${userId}`);
+  const imageUrl = await uploadToS3(
+    imageBuffer,
+    imageType,
+    `profiles/${userId}`
+  );
 
   const user = await User.findById(userId);
   if (!user) {
@@ -450,11 +405,125 @@ export const uploadProfilePicture = async (userId, imageBuffer, imageType) => {
   await ActivityLog.create({
     user: userId,
     action: "PROFILE_PICTURE_UPDATED",
-    details: { imageUrl }
+    details: { imageUrl },
   });
 
   logger.info(`Profile picture updated for user: ${userId}`);
   return imageUrl;
 };
 
+export const deactivateUserAccount = async (userId) => {
+  try {
+    const user = await User.findById(userId).select("+password");
 
+    if (!user) {
+      throw new AppError("User not found", 404);
+    }
+
+    if (!user.isActive) {
+      throw new AppError("User account is already deactivated", 400);
+    }
+
+    user.isActive = false;
+    await user.save();
+
+    // Log the account deactivation
+    await ActivityLog.create({
+      user: userId,
+      action: "ACCOUNT_DEACTIVATED",
+      details: {
+        deactivatedAt: new Date(),
+      },
+    });
+
+    logger.info(`User account deactivated: ${userId}`);
+  } catch (error) {
+    logger.error(`Error deactivating user account (${userId}):`, error);
+    throw error;
+  }
+};
+
+export const reactivateUserAccount = async (userId) => {
+  try {
+    const user = await User.findById(userId).select("+password");
+
+    if (!user) {
+      throw new AppError("User not found", 404);
+    }
+
+    if (user.isActive) {
+      throw new AppError("User account is already active", 400);
+    }
+
+    user.isActive = true;
+    await user.save();
+
+    // Log the account reactivation
+    await ActivityLog.create({
+      user: userId,
+      action: "ACCOUNT_REACTIVATED",
+      details: {
+        reactivatedAt: new Date(),
+      },
+    });
+
+    logger.info(`User account reactivated: ${userId}`);
+  } catch (error) {
+    logger.error(`Error reactivating user account (${userId}):`, error);
+    throw error;
+  }
+};
+
+export const performPasswordReset = async (
+  userId,
+  currentPassword,
+  newPassword
+) => {
+  try {
+    const user = await User.findById(userId).select("+password");
+
+    if (!user) {
+      throw new AppError("User not found", 404);
+    }
+
+    if (!(await user.matchPassword(currentPassword))) {
+      throw new AppError("Current password is incorrect", 400);
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    // Log the password reset
+    await ActivityLog.create({
+      user: userId,
+      action: "PASSWORD_RESET",
+      details: {
+        ip: user.lastLoginIP || "Unknown",
+        userAgent: user.lastLoginUserAgent || "Unknown",
+      },
+    });
+
+    logger.info(`Password reset successful for user: ${userId}`);
+  } catch (error) {
+    logger.error(`Error resetting password for user (${userId}):`, error);
+    throw error;
+  }
+};
+
+const userService = {
+  getCurrentUserService,
+  getUserById,
+  updateUserProfile,
+  updateUserPreferences,
+  updateUserSettings,
+  deleteUserAccount,
+  exportUserData,
+  initiatePasswordReset,
+  resetPassword,
+  uploadProfilePicture,
+  deactivateUserAccount,
+  reactivateUserAccount,
+  performPasswordReset
+};
+
+export default userService;

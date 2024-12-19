@@ -1,82 +1,103 @@
-import jwt from 'jsonwebtoken';
-import asyncHandler from 'express-async-handler';
-import User from '../models/User.js';
-import { isTokenBlacklisted } from '../services/tokenBlacklistService.js';
-import { createError } from '../utils/errors.js';
-import { logger } from '../utils/logger.js';
-import rateLimit from 'express-rate-limit';
-import csrf from 'csurf';
+// src/middlewares/auth.js
 
-// Initialize CSRF protection
-const csrfProtection = csrf({ cookie: true });
+import asyncHandler from "express-async-handler";
+import User from "../models/User.js";
+import { isTokenBlacklisted } from "../services/tokenBlacklistService.js";
+import { createError } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
+import { verifyAndCheckToken } from "../services/tokenService.js";
+import { twoFactorService } from "../services/twoFactorService.js";
 
 /**
- * Middleware to handle JWT token verification
+ * Base authentication check
+ * Verifies JWT, checks blacklist, and attaches user to request
  */
-export const verifyToken = asyncHandler(async (req, res, next) => {
-    let accessToken;
+const baseAuthCheck = async (token) => {
+  if (!token) {
+    throw createError("authentication", "Not authorized, token missing", 401);
+  }
 
-    // Check for token in cookies
-    if (req.cookies && req.cookies.access_token) {
-        accessToken = req.cookies.access_token;
-    }
-
-    if (!accessToken) {
-        return next(createError('authentication', 'Not authorized to access this route', 401));
-    }
-
+  try {
     // Check if token is blacklisted
-    const isBlacklisted = await isTokenBlacklisted(accessToken);
-    if (isBlacklisted) {
-        return next(createError('authentication', 'Token has been revoked', 401));
+    const isBlacklistedToken = await isTokenBlacklisted(token);
+    if (isBlacklistedToken) {
+      throw createError("authentication", "Token has been revoked", 401);
     }
 
-    try {
-        const decoded = jwt.verify(accessToken, process.env.JWT_ACCESS_SECRET);
+    // Verify token
+    const decoded = await verifyAndCheckToken(
+      token,
+      process.env.JWT_ACCESS_SECRET,
+      "access"
+    );
 
-        const user = await User.findById(decoded.id);
-        if (!user) {
-            return next(createError('authentication', 'No user found with this ID', 404));
-        }
+    // Fetch user and select necessary fields
+    const user = await User.findById(decoded.id)
+      .select("+twoFactorEnabled +twoFactorSecret")
+      .lean()
+      .exec();
 
-        // Check if user changed password after token was issued
-        if (user.passwordChangedAfter(decoded.iat)) {
-            return next(createError('authentication', 'User recently changed password. Please log in again.', 401));
-        }
-
-        req.user = user;
-        next();
-    } catch (error) {
-        logger.error('Authentication error:', error);
-        return next(createError('authentication', 'Not authorized to access this route', 401));
+    if (!user) {
+      throw createError("authentication", "User not found", 401);
     }
+
+    // Check if password was changed after token issuance
+    if (user.passwordChangedAt && user.passwordChangedAfter(decoded.iat)) {
+      throw createError(
+        "authentication",
+        "Password recently changed, please log in again",
+        401
+      );
+    }
+
+    return { user, decoded };
+  } catch (error) {
+    logger.error("Authentication error:", error);
+    throw createError("authentication", "Authentication failed", 401);
+  }
+};
+
+/**
+ * Protect middleware to secure routes with two-factor authentication
+ */
+export const protect = asyncHandler(async (req, res, next) => {
+  const token = req.cookies?.access_token;
+  const { user, decoded } = await baseAuthCheck(token);
+  req.user = user;
+  logger.debug(`Authenticated user: ${user._id}`);
+
+  // If 2FA is enabled, verify it
+  if (user.isTwoFactorEnabled) {
+    // Check if 2FA has been verified in the current session
+    if (!req.session.isTwoFactorAuthenticated) {
+      return res.status(401).json({
+        success: false,
+        message: "Two-factor authentication required",
+      });
+    }
+  }
+
+  next();
 });
 
 /**
- * Protect routes by verifying JWT tokens from HttpOnly cookies
- */
-export const protect = [
-    rateLimit({
-        windowMs: 15 * 60 * 1000, // 15 minutes
-        max: 100, // limit each IP to 100 requests per windowMs
-        message: 'Too many requests from this IP, please try again later.'
-    }),
-    csrfProtection,
-    verifyToken,
-    asyncHandler(async (req, res, next) => {
-        next();
-    })
-];
-
-/**
- * Authorize based on user roles
- * @param  {...any} roles - Allowed roles
+ * Authorize middleware for role-based access control
+ * @param  {...string} roles - Allowed user roles
  */
 export const authorize = (...roles) => {
-    return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
-            return next(createError('authorization', 'You do not have permission to perform this action', 403));
-        }
-        next();
-    };
+  return (req, res, next) => {
+    if (!req.user) {
+      return next(createError("authorization", "User not authenticated", 401));
+    }
+    if (!roles.includes(req.user.role)) {
+      return next(
+        createError(
+          "authorization",
+          `Required role: ${roles.join(" or ")}`,
+          403
+        )
+      );
+    }
+    next();
+  };
 };

@@ -1,52 +1,67 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import cors from 'cors';
-import helmet from 'helmet';
-import hpp from 'hpp';
-import xss from 'xss-clean';
-import cookieParser from 'cookie-parser';
-import passport from 'passport';
-import morgan from 'morgan';
-import compression from 'compression';
-import apiRoutes from './routes/api/v1/index.js';
-import { errorHandler } from './middlewares/errorHandler.js';
-import { logger } from './utils/logger.js';
-import AppError from './utils/appError.js';
-import { v4 as uuidv4 } from 'uuid';
-import './config/passport.js'; // Passport configuration
-import session from 'express-session';
-import { emailVerificationRateLimiter, emailResendRateLimiter, profileUpdateRateLimiter, tokenRefreshRateLimiter, loginAttemptRateLimiter, otpRequestRateLimiter, passwordResetRateLimiter } from './middlewares/rateLimiter.js'; // Import rate limit middleware
-import { requestLogger } from './middlewares/logger.js';
-import rateLimit from 'express-rate-limit';
-import mongoSanitize from 'express-mongo-sanitize';
-import csrfProtection, { handleCsrfError } from './middlewares/csrf.js'; // Import CSRF protection middleware
+// src/app.js
+
+import express from "express";
+import dotenv from "dotenv";
+import cors from "cors";
+import helmet from "helmet";
+import hpp from "hpp";
+import xss from "xss-clean";
+import cookieParser from "cookie-parser";
+import passport from "passport";
+import morgan from "morgan";
+import compression from "compression";
+import apiRoutes from "./routes/api/v1/index.js";
+import { errorHandler, handleCsrfError } from "./middlewares/errorHandler.js";
+import AppError from "./utils/appError.js";
+import { v4 as uuidv4 } from "uuid";
+import "./config/passport.js"; // Passport configuration
+import session from "express-session";
+import {
+  emailVerificationRateLimiter,
+  emailResendRateLimiter,
+  profileUpdateRateLimiter,
+  tokenRefreshRateLimiter,
+  loginAttemptRateLimiter,
+  otpRequestRateLimiter,
+  passwordResetRateLimiter,
+} from "./middlewares/rateLimiter.js";
+import { requestLogger } from "./middlewares/logger.js";
+import rateLimit from "express-rate-limit";
+import mongoSanitize from "express-mongo-sanitize";
+import { csrfProtection } from "./middlewares/csrf.js";
 
 dotenv.config();
 
 // Validate required environment variables
 const requiredEnvVars = [
-  'JWT_ACCESS_SECRET',
-  'JWT_REFRESH_SECRET',
-  'MONGODB_URI',
-  'PORT',
-  'REDIS_HOST',
-  'REDIS_PORT',
-  'MAILTRAP_HOST',
-  'MAILTRAP_PORT',
-  'MAILTRAP_USER',
-  'MAILTRAP_PASS',
-  'GOOGLE_CLIENT_ID',
-  'GOOGLE_CLIENT_SECRET',
+  "JWT_ACCESS_SECRET",
+  "JWT_REFRESH_SECRET",
+  "MONGODB_URI",
+  "PORT",
+  "REDIS_HOST",
+  "REDIS_PORT",
+  "MAILTRAP_HOST",
+  "MAILTRAP_PORT",
+  "MAILTRAP_USER",
+  "MAILTRAP_PASS",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "CLIENT_URL",
+  "SERVER_URL",
+  "NODE_ENV",
+  "FRONTEND_URL",
 ];
-
 const validateEnvVars = () => {
   requiredEnvVars.forEach((envVar) => {
     if (!process.env[envVar]) {
-      logger.error(`FATAL ERROR: ${envVar} is not defined.`);
+      console.error(`FATAL ERROR: ${envVar} is not defined.`);
       process.exit(1);
     }
   });
 };
+
+// Call validation
+validateEnvVars();
 
 const app = express();
 
@@ -64,11 +79,11 @@ app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", 'trustedscripts.com'],
+      scriptSrc: ["'self'", "trustedscripts.com"],
       connectSrc: ["'self'", process.env.CLIENT_URL],
-      imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
-      styleSrc: ["'self'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
       objectSrc: ["'none'"],
       upgradeInsecureRequests: [],
     },
@@ -84,14 +99,17 @@ app.use(
 );
 
 // CORS Configuration
-const allowedOrigins = [process.env.CLIENT_URL, 'https://another-allowed-origin.com'];
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  "https://another-allowed-origin.com",
+];
 app.use(
   cors({
     origin: (origin, callback) => {
       if (allowedOrigins.includes(origin) || !origin) {
         callback(null, true);
       } else {
-        callback(new Error('Not allowed by CORS'));
+        callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true,
@@ -102,27 +120,27 @@ app.use(
 app.use(requestLogger);
 
 // Parse incoming requests
-app.use(express.json({ limit: '10kb' })); // Limit request body size
-app.use(express.urlencoded({ extended: true, limit: '10kb' })); // Limit URL-encoded request body size
+app.use(express.json({ limit: "10kb" })); // Limit request body size
+app.use(express.urlencoded({ extended: true, limit: "10kb" })); // Limit URL-encoded request body size
 app.use(xss()); // Sanitize user input against XSS attacks
 app.use(hpp()); // Prevent HTTP Parameter Pollution
 app.use(cookieParser()); // Parse cookies
 app.use(compression()); // Compress responses with Gzip & Brotli
 
 // Rate Limiting for API requests
-app.use('/api/v1/email/verify', emailVerificationRateLimiter);
-app.use('/api/v1/email/resend', emailResendRateLimiter);
-app.use('/api/v1/profile/update', profileUpdateRateLimiter);
-app.use('/api/v1/token/refresh', tokenRefreshRateLimiter);
-app.use('/api/v1/login', loginAttemptRateLimiter); // Changed from loginAttemptRateLimit
-app.use('/api/v1/otp/request', otpRequestRateLimiter);
-app.use('/api/v1/password/reset', passwordResetRateLimiter);
+app.use("/api/v1/email/verify", emailVerificationRateLimiter);
+app.use("/api/v1/email/resend", emailResendRateLimiter);
+app.use("/api/v1/profile/update", profileUpdateRateLimiter);
+app.use("/api/v1/token/refresh", tokenRefreshRateLimiter);
+app.use("/api/v1/login", loginAttemptRateLimiter);
+app.use("/api/v1/otp/request", otpRequestRateLimiter);
+app.use("/api/v1/password/reset", passwordResetRateLimiter);
 
 // General Rate Limiting
 const generalRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
+  message: "Too many requests from this IP, please try again later.",
 });
 app.use(generalRateLimiter);
 
@@ -130,11 +148,11 @@ app.use(generalRateLimiter);
 app.use(mongoSanitize());
 
 // Logging
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
+if (process.env.NODE_ENV === "development") {
+  app.use(morgan("dev"));
 } else {
   app.use(
-    morgan('combined', {
+    morgan("combined", {
       stream: {
         write: (message) => logger.info(message.trim()),
       },
@@ -150,7 +168,7 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000, // 1 day
     },
   })
@@ -161,14 +179,14 @@ app.use(passport.session());
 // Attach Request Logger
 app.use((req, res, next) => {
   logger.info(
-    `🔍 Request ID: ${req.id} | ${req.method} ${req.url} | IP: ${req.ip} | User-Agent: ${req.headers['user-agent']}`
+    `🔍 Request ID: ${req.id} | ${req.method} ${req.url} | IP: ${req.ip} | User-Agent: ${req.headers["user-agent"]}`
   );
   next();
 });
 
-// Apply CSRF protection to all POST, PUT, DELETE routes
+// Apply CSRF protection to all state-changing routes
 app.use((req, res, next) => {
-  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+  if (["POST", "PUT", "DELETE"].includes(req.method)) {
     csrfProtection(req, res, next);
   } else {
     next();
@@ -176,10 +194,10 @@ app.use((req, res, next) => {
 });
 
 // API Routes
-app.use('/api/v1', apiRoutes);
+app.use("/api/v1", apiRoutes);
 
 // 404 handler for undefined routes
-app.all('*', (req, res, next) => {
+app.all("*", (req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
 

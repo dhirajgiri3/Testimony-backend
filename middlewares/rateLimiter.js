@@ -1,7 +1,6 @@
 // src/middlewares/rateLimiter.js
 
 import { redis } from "../config/redis.js";
-import { createRateLimitError } from "../utils/errors.js";
 import { logger } from "../utils/logger.js";
 
 /**

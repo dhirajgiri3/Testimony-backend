@@ -19,7 +19,6 @@ import skillsRoutes from "./skills.js";
 import predictiveRoutes from "./predictive.js";
 import recommendationsRoutes from "./recommendations.js";
 import healthcheckRoutes from "./healthcheck.js";
-
 import { logger } from "../../../utils/logger.js";
 import AppError from "../../../utils/appError.js";
 import { handleNotFound } from "../../../middlewares/errorHandler.js";
@@ -35,16 +34,13 @@ router.use(cors({
   credentials: true
 }));
 
-// Rate limiting
+// Rate Limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later',
-  standardHeaders: true,
-  legacyHeaders: false,
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
 });
-
-router.use(apiLimiter);
+router.use('/api/', apiLimiter);
 
 // Request Tracking Middleware
 router.use((req, res, next) => {
@@ -67,70 +63,26 @@ router.use((req, res, next) => {
   next();
 });
 
-// Swagger Configuration
+// Swagger Documentation
 const swaggerOptions = {
-  definition: {
+  swaggerDefinition: {
     openapi: "3.0.0",
     info: {
-      title: "Testimony API Documentation",
+      title: "Testimony API",
       version: "1.0.0",
       description: "API documentation for Testimony application",
-      contact: {
-        name: "API Support",
-        email: "support@testimony.com",
-      },
     },
     servers: [
       {
-        url: process.env.API_URL || "http://localhost:5003",
-        description: "API Server",
-      },
-    ],
-    components: {
-      securitySchemes: {
-        bearerAuth: {
-          type: "http",
-          scheme: "bearer",
-          bearerFormat: "JWT",
-        },
-      },
-      responses: {
-        UnauthorizedError: {
-          description: "Authentication is required",
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  message: {
-                    type: 'string',
-                    example: 'Unauthorized access'
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    security: [
-      {
-        bearerAuth: [],
+        url: "http://localhost:5000/api/v1",
       },
     ],
   },
-  apis: ["./routes/api/v1/*.js", "./models/*.js"],
+  apis: ["./routes/api/v1/*.js"],
 };
 
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-
-// API Documentation Routes
-router.use("/docs", swaggerUi.serve);
-router.get("/docs", swaggerUi.setup(swaggerSpec));
-router.get("/docs.json", (req, res) => {
-  res.setHeader("Content-Type", "application/json");
-  res.send(swaggerSpec);
-});
+const specs = swaggerJsdoc(swaggerOptions);
+router.use("/docs", swaggerUi.serve, swaggerUi.setup(specs));
 
 // API Version and Health Check
 router.get("/version", (req, res) => {
@@ -144,26 +96,19 @@ router.get("/version", (req, res) => {
 });
 
 // API Routes
-const apiRoutes = [
-  { path: "/auth", router: authRoutes },
-  { path: "/users", router: userRoutes },
-  { path: "/testimonials", router: testimonialRoutes },
-  { path: "/analytics", router: analyticsRoutes },
-  { path: "/ai", router: aiRoutes },
-  { path: "/goals", router: goalsRoutes },
-  { path: "/skills", router: skillsRoutes },
-  { path: "/predictive", router: predictiveRoutes },
-  { path: "/recommendations", router: recommendationsRoutes },
-  { path: "/healthcheck", router: healthcheckRoutes }
-];
+router.use("/auth", authRoutes);
+router.use("/users", userRoutes);
+router.use("/testimonials", testimonialRoutes);
+router.use("/analytics", analyticsRoutes);
+router.use("/ai", aiRoutes);
+router.use("/goals", goalsRoutes);
+router.use("/skills", skillsRoutes);
+router.use("/predictive", predictiveRoutes);
+router.use("/recommendations", recommendationsRoutes);
+router.use("/healthcheck", healthcheckRoutes);
 
-// Register routes
-apiRoutes.forEach(({ path, router: routeHandler }) => {
-  router.use(path, routeHandler);
-});
-
-// 404 Handler
-router.use(handleNotFound);
+// Handle 404
+router.all("*", handleNotFound);
 
 // Global Error Handler
 router.use((err, req, res, next) => {

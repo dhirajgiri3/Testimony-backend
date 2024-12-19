@@ -1,104 +1,48 @@
-import { logger } from '../utils/logger.js';
-import AppError from '../utils/appError.js';
+// src/middlewares/errorHandler.js
+
+import { formatError } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
+import AppError from "../utils/appError.js";
 
 /**
- * Global error handling middleware
+ * Error handling middleware
  */
 export const errorHandler = (err, req, res, next) => {
-  // Log the error with request details and correlation ID
-  logger.error(`Error [${req.id}]: ${err.name}: ${err.message}`, {
+  // If the error is not an instance of AppError, convert it
+  if (!(err instanceof AppError)) {
+    logger.error("Unexpected Error:", err);
+    err = new AppError("An unexpected error occurred", 500);
+  }
+
+  // Log the error details
+  logger.error(`Error [${err.statusCode}]: ${err.message}`, {
     stack: err.stack,
-    requestId: req.id,
-    method: req.method,
-    url: req.originalUrl,
-    ip: req.ip,
-    userId: req.user?.id,
-    body: req.body,
-    query: req.query,
-    params: req.params,
+    user: req.user ? req.user.id : "Unauthenticated",
+    path: req.originalUrl,
   });
 
-  // Determine error type and status code
-  const statusCode = err.statusCode || 500;
-  const message = err.message || 'An unexpected error occurred';
+  // Format the error response
+  const errorResponse = formatError(
+    err,
+    process.env.NODE_ENV === "development"
+  );
 
-  // Structure the error response
-  const errorResponse = {
-    success: false,
-    error: {
-      type: err.name || 'APIError',
-      code: `ERR_${statusCode}`,
-      message,
-      ...(process.env.NODE_ENV === 'development' && {
-        stack: err.stack,
-        details: err.details || undefined,
-      }),
-    },
-    requestId: req.id,
-    timestamp: new Date().toISOString(),
-  };
-
-  // Handle specific error types
-  if (err.name === 'ValidationError') {
-    errorResponse.error.validationErrors = Object.values(err.errors || {}).map(
-      (e) => ({
-        field: e.path,
-        message: e.message,
-      })
-    );
-  }
-
-  // Handle MongoDB duplicate key errors
-  if (err.code === 11000) {
-    errorResponse.error.type = 'DuplicateKeyError';
-    errorResponse.error.message = 'Duplicate field value entered';
-  }
-
-  res.status(statusCode).json(errorResponse);
+  res.status(err.statusCode).json(errorResponse);
 };
 
 /**
- * Handle validation errors
+ * Handle CSRF Errors
  */
-export const handleValidationError = (err, req, res, next) => {
-  if (err.name === 'ValidationError') {
-    const validationErrors = Object.values(err.errors || {}).map((e) => ({
-      field: e.path,
-      message: e.message,
-    }));
+export const handleCsrfError = (err, req, res, next) => {
+  if (err.code !== "EBADCSRFTOKEN") return next(err);
 
-    const errorResponse = {
-      success: false,
-      error: {
-        type: 'ValidationError',
-        code: 'ERR_400',
-        message: 'Validation failed',
-        validationErrors,
-      },
-      requestId: req.id,
-      timestamp: new Date().toISOString(),
-    };
-
-    return res.status(400).json(errorResponse);
-  }
-
-  next(err);
+  // CSRF token errors
+  res.status(403).json({
+    status: "fail",
+    message: "Invalid CSRF token",
+  });
 };
 
 export const handleNotFound = (req, res, next) => {
-  next(new AppError(`Not found - ${req.originalUrl}`, 404));
+  next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 };
-
-// Global promise rejection handler
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-// Global exception handler
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  // Give the server time to send any pending responses before shutting down
-  setTimeout(() => {
-    process.exit(1);
-  }, 1000);
-});

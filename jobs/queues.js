@@ -1,39 +1,24 @@
 // src/jobs/queues.js
 
 import { Queue, QueueEvents } from "bullmq";
-import {redis} from "../config/redis.js"; // Use the singleton Redis client
+import { redis } from "../config/redis.js"; // Use the singleton Redis client
 import { logger } from "../utils/logger.js";
 
-const defaultBullMQOptions = {
-  connection: redis, // Use shared Redis connection
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: "exponential",
-      delay: 1000,
-    },
-    removeOnComplete: true,
-    removeOnFail: false,
-  },
+// Initialize queues
+export const queues = {
+  emailQueue: new Queue("emailQueue", { connection: redis }),
+  testimonialQueue: new Queue("testimonialQueue", { connection: redis }),
+  aiQueue: new Queue("aiQueue", { connection: redis }),
+  analyticsQueue: new Queue("analyticsQueue", { connection: redis }),
+  exportQueue: new Queue("exportQueue", { connection: redis }),
+  notificationQueue: new Queue("notificationQueue", { connection: redis }),
 };
 
-// Initialize Queues
-const queues = {
-  emailQueue: new Queue("emailQueue", defaultBullMQOptions),
-  testimonialQueue: new Queue("testimonialQueue", defaultBullMQOptions),
-  aiQueue: new Queue("aiQueue", defaultBullMQOptions),
-  analyticsQueue: new Queue("analyticsQueue", defaultBullMQOptions),
-  exportQueue: new Queue("exportQueue", defaultBullMQOptions),
-  notificationQueue: new Queue("notificationQueue", defaultBullMQOptions),
-};
-
-// Initialize QueueEvents for each queue
-const queueEvents = {};
-
+// Initialize queue events
 Object.keys(queues).forEach((queueName) => {
   try {
     const queueEvent = new QueueEvents(queueName, { connection: redis });
-    queueEvents[queueName] = queueEvent;
+    queues[`${queueName}Events`] = queueEvent;
 
     queueEvent.on("completed", ({ jobId }) => {
       logger.info(
@@ -65,5 +50,3 @@ Object.keys(queues).forEach((queueName) => {
     );
   }
 });
-
-export { queues, queueEvents };

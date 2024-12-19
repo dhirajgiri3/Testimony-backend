@@ -1,449 +1,476 @@
-import asyncHandler from 'express-async-handler';
-import {
-  registerUser,
-  verifyEmailService,
-  resendVerificationEmailService,
-  loginUser,
-  logoutUser,
-  loginWithOTPService,
-  verifyLoginOTPService,
-  refreshTokens,
-  initiatePasswordReset,
-  resetPassword,
-} from '../services/authService.js';
-import { addToTokenBlacklist } from '../services/tokenBlacklistService.js';
-import { createVerificationEmailTemplate, createPasswordResetEmailTemplate } from '../utils/emailTemplates.js';
-import { createError } from '../utils/errors.js';
-import {
-  emailVerificationRateLimiter,
-  loginRateLimiter,
-  tokenRefreshRateLimiter,
-  otpRequestRateLimiter,
-  emailRateLimiter,
-  passwordResetRateLimiter,
-} from '../middlewares/rateLimiter.js';
-import { rotateRefreshToken } from '../services/tokenService.js';
-import { body, validationResult } from 'express-validator';
-import csrf from 'csurf';
-import { queues } from '../jobs/queues.js';
+// src/controllers/authController.js
 
-// Initialize CSRF protection
-const csrfProtection = csrf({ cookie: true });
+import asyncHandler from "express-async-handler";
+import User from "../models/User.js";
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from "../services/emailService.js";
+import { twoFactorService } from "../services/twoFactorService.js";
+import { createError, createValidationError } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
+import {
+  generateAccessToken,
+  generateRefreshToken,
+  rotateRefreshToken,
+  verifyRefreshToken,
+} from "../services/tokenService.js";
+import {
+  validatePasswordStrength,
+  normalizePhoneNumber,
+} from "../utils/inputValidation.js";
+import AppError from "../utils/appError.js";
+import { twoFactorService as twoFactor } from "../services/twoFactorService.js";
+import {
+  setupTwoFactorAuth,
+  enableTwoFactorAuth,
+  disableTwoFactorAuth
+} from "../services/twoFactorService.js";
+import { sendOTP, verifyOTP } from "../services/smsService.js";
 
 /**
- * @desc    Register a new user
- * @route   POST /api/v1/auth/register
- * @access  Public
+ * Register a new user
  */
-export const register = [
-  emailVerificationRateLimiter,
-  body('firstName').notEmpty().withMessage('First name is required'),
-  body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  body('password')
-    .isLength({ min: 6 }).withMessage('Password must be at least 6 characters long')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/)
-    .withMessage('Password must include uppercase, lowercase, number, and special character'),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
+export const register = asyncHandler(async (req, res, next) => {
+  const {
+    firstName,
+    lastName,
+    email,
+    username,
+    password,
+    confirmPassword,
+    phone,
+  } = req.body;
 
-    const { firstName, lastName, email, password, phone } = req.body;
+  // Check if user already exists
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    throw createError("validation", "Email already in use", 400);
+  }
 
-    const { user, verificationToken } = await registerUser({
-      firstName,
-      lastName,
-      email,
-      password,
-      phone,
-    });
+  // Create new user
+  const user = new User({
+    firstName,
+    lastName,
+    email: email.toLowerCase(),
+    username,
+    password,
+    phone: phone ? normalizePhoneNumber(phone) : undefined,
+  });
 
-    // Create verification link
-    const verificationLink = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+  await user.save();
 
-    // Enqueue email sending job
-    await queues.emailQueue.add('sendVerificationEmail', {
-      email,
-      subject: 'Verify Your Email',
-      html: createVerificationEmailTemplate(verificationLink),
-    });
+  // Generate email verification token
+  const verificationToken = user.generateEmailVerificationToken();
+  await user.save();
 
-    res.status(201).json({
+  // Send verification email
+  await sendVerificationLink(user.email, verificationToken);
+
+  res.status(201).json({
+    success: true,
+    message: "User registered successfully. Please verify your email.",
+  });
+});
+
+/**
+ * Verify user's email
+ */
+export const verifyEmail = asyncHandler(async (req, res, next) => {
+  const { token } = req.params;
+
+  if (!token) {
+    throw createError("validation", "Verification token is missing", 400);
+  }
+
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+  const user = await User.findOne({
+    emailVerificationToken: hashedToken,
+    emailVerificationTokenExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw createError(
+      "validation",
+      "Invalid or expired verification token",
+      400
+    );
+  }
+
+  user.isEmailVerified = true;
+  user.emailVerificationToken = undefined;
+  user.emailVerificationTokenExpiry = undefined;
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    message: "Email verified successfully. You can now log in.",
+  });
+});
+
+/**
+ * Resend verification email
+ */
+export const resendVerificationEmail = asyncHandler(async (req, res, next) => {
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    throw createError("notFound", "User not found", 404);
+  }
+
+  if (user.isEmailVerified) {
+    throw createError("validation", "Email is already verified", 400);
+  }
+
+  // Generate new verification token
+  const verificationToken = user.generateEmailVerificationToken();
+  await user.save();
+
+  // Send verification email
+  await sendVerificationLink(user.email, verificationToken);
+
+  res.status(200).json({
+    success: true,
+    message: "Verification email resent successfully.",
+  });
+});
+
+/**
+ * Login user
+ */
+export const login = asyncHandler(async (req, res, next) => {
+  const { email, password } = req.body;
+
+  // Validate email and password
+  if (!email || !password) {
+    throw createError("validation", "Please provide email and password", 400);
+  }
+
+  const user = await User.findOne({ email: email.toLowerCase() }).select(
+    "+password"
+  );
+
+  if (!user || !(await user.matchPassword(password))) {
+    throw createError("authentication", "Invalid email or password", 401);
+  }
+
+  if (!user.isEmailVerified) {
+    throw createError(
+      "authentication",
+      "Please verify your email to log in",
+      401
+    );
+  }
+
+  // Check if account is locked
+  if (user.lockedUntil && user.lockedUntil > Date.now()) {
+    throw createError(
+      "authentication",
+      "Account is locked. Please try again later.",
+      403
+    );
+  }
+
+  // Reset login attempts on successful login
+  user.loginAttempts = 0;
+  user.lockedUntil = undefined;
+  await user.save();
+
+  // Generate tokens
+  const accessToken = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user);
+
+  // Set tokens in HTTP-only cookies
+  res.cookie("access_token", accessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 15 * 60 * 1000, // 15 minutes
+  });
+
+  res.cookie("refresh_token", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+
+  // If 2FA is enabled, generate and send code
+  if (user.isTwoFactorEnabled) {
+    await twoFactorService.generateTwoFactorCode(user.id);
+    return res.status(200).json({
       success: true,
-      message: 'Registration successful. Please verify your email.',
+      message: "Two-factor authentication code sent to your authenticator app.",
+      requires2FA: true,
     });
-  }),
-];
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Logged in successfully.",
+  });
+});
 
 /**
- * @desc    Verify email
- * @route   GET /api/v1/auth/verify-email/:token
- * @access  Public
+ * Verify 2FA code
  */
-export const verifyEmail = [
-  asyncHandler(async (req, res, next) => {
-    const token = req.params.token;
+export const verifyTwoFactor = asyncHandler(async (req, res, next) => {
+  const { userId, code } = req.body;
 
-    if (!token) {
-      return next(createError('validation', 'Verification token is required'));
+  if (!userId || !code) {
+    throw createError("validation", "User ID and code are required", 400);
+  }
+
+  await twoFactor.verifyTwoFactorCode(userId, code);
+
+  // Set a flag in the session indicating 2FA is completed
+  req.session.isTwoFactorAuthenticated = true;
+
+  res.status(200).json({
+    success: true,
+    message: "Two-factor authentication successful.",
+  });
+});
+
+/**
+ * Refresh access token
+ */
+export const refreshTokenController = asyncHandler(async (req, res, next) => {
+  const refreshToken = req.cookies?.refresh_token;
+
+  if (!refreshToken) {
+    throw createError("authentication", "Refresh token missing", 401);
+  }
+
+  try {
+    const decoded = verifyRefreshToken(refreshToken);
+
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      throw createError("authentication", "User not found", 401);
     }
 
-    await verifyEmailService(token);
+    // Check if token version matches
+    if (decoded.tokenVersion !== user.tokenVersion) {
+      throw createError("authentication", "Token has been revoked", 401);
+    }
+
+    // Generate new access token
+    const newAccessToken = generateAccessToken(user);
+
+    // Optionally, rotate refresh token
+    const newRefreshToken = rotateRefreshToken(user);
+
+    // Set new tokens in cookies
+    res.cookie("access_token", newAccessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 15 * 60 * 1000, // 15 minutes
+    });
+
+    res.cookie("refresh_token", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
 
     res.status(200).json({
       success: true,
-      message: 'Email verified successfully',
+      message: "Token refreshed successfully.",
     });
-  }),
-];
+  } catch (error) {
+    throw createError(
+      "authentication",
+      "Invalid or expired refresh token",
+      401
+    );
+  }
+});
 
 /**
- * @desc    Resend verification email
- * @route   POST /api/v1/auth/resend-verification
- * @access  Public
+ * Logout user
  */
-export const resendVerificationEmail = [
-  emailRateLimiter,
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
+export const logout = asyncHandler(async (req, res, next) => {
+  const refreshToken = req.cookies?.refresh_token;
 
-    const { email } = req.body;
+  if (refreshToken) {
+    // Blacklist the refresh token
+    await rotateRefreshToken(req.user, true); // Assuming a flag to blacklist
+  }
 
-    const { verificationToken } = await resendVerificationEmailService(email);
+  // Clear cookies
+  res.clearCookie("access_token");
+  res.clearCookie("refresh_token");
 
-    const verificationLink = `${process.env.CLIENT_URL}/verify-email/${verificationToken}`;
+  res.status(200).json({
+    success: true,
+    message: "Logged out successfully.",
+  });
+});
 
-    // Enqueue email sending job
-    await queues.emailQueue.add('sendVerificationEmail', {
-      email,
-      subject: 'Verify Your Email',
-      html: createVerificationEmailTemplate(verificationLink),
-    });
+/**
+ * Forgot Password - Initiate reset
+ */
+export const forgotPassword = asyncHandler(async (req, res, next) => {
+  const { email } = req.body;
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+
+  if (!user) {
+    throw createError("notFound", "User with this email does not exist", 404);
+  }
+
+  // Generate password reset token
+  const resetToken = user.generatePasswordResetToken();
+  await user.save();
+
+  // Send password reset email
+  const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+  await sendPasswordResetEmail(user.email, resetUrl);
+
+  res.status(200).json({
+    success: true,
+    message: "Password reset email sent successfully.",
+  });
+});
+
+/**
+ * Reset Password - Complete reset
+ */
+export const resetPasswordController = asyncHandler(async (req, res, next) => {
+  const { token, newPassword, confirmPassword } = req.body;
+
+  if (!token || !newPassword || !confirmPassword) {
+    throw createError("validation", "All fields are required", 400);
+  }
+
+  if (newPassword !== confirmPassword) {
+    throw createError("validation", "Passwords do not match", 400);
+  }
+
+  // Validate password strength
+  validatePasswordStrength(newPassword);
+
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+  const user = await User.findOne({
+    resetPasswordToken: hashedToken,
+    resetPasswordExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw createError(
+      "validation",
+      "Invalid or expired password reset token",
+      400
+    );
+  }
+
+  user.password = newPassword;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpiry = undefined;
+  user.tokenVersion += 1; // Invalidate existing refresh tokens
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    message:
+      "Password reset successfully. You can now log in with your new password.",
+  });
+});
+
+/**
+ * Send phone OTP for verification
+ * @route POST /api/auth/send-otp
+ */
+export const sendPhoneOTP = asyncHandler(async (req, res, next) => {
+  const { phone } = req.body;
+
+  if (!phone) {
+    throw createError("validation", "Phone number is required", 400);
+  }
+
+  // Normalize and validate phone number
+  const normalizedPhone = normalizePhoneNumber(phone);
+  if (!normalizedPhone) {
+    throw createError("validation", "Invalid phone number format", 400);
+  }
+
+  // Rate limiting check (assuming it's implemented in middleware)
+  if (req.rateLimit && req.rateLimit.remaining === 0) {
+    throw createError("tooManyRequests", "Too many OTP requests. Please try again later", 429);
+  }
+
+  try {
+    // Use smsService to send OTP
+    const result = await sendOTP(normalizedPhone);
+
+    logger.info(`OTP sent successfully to phone: ${normalizedPhone.slice(-4)}`);
 
     res.status(200).json({
       success: true,
-      message: 'Verification email resent successfully',
+      message: "OTP sent successfully",
+      expiresIn: result.expiresIn * 60 // Convert minutes to seconds
     });
-  }),
-];
+  } catch (error) {
+    logger.error(`Failed to send OTP: ${error.message}`);
+    throw createError("serverError", error.message || "Failed to send OTP", 500);
+  }
+});
 
 /**
- * @desc    Login user
- * @route   POST /api/v1/auth/login
- * @access  Public
+ * Verify phone OTP
+ * @route POST /api/auth/verify-otp
  */
-export const login = [
-  loginRateLimiter,
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  body('password').notEmpty().withMessage('Password is required'),
-  csrfProtection,
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
+export const verifyPhoneOTP = asyncHandler(async (req, res, next) => {
+  const { phone, code } = req.body;
+
+  if (!phone || !code) {
+    throw createError("validation", "Phone number and code are required", 400);
+  }
+
+  // Normalize phone number
+  const normalizedPhone = normalizePhoneNumber(phone);
+  if (!normalizedPhone) {
+    throw createError("validation", "Invalid phone number format", 400);
+  }
+
+  try {
+    // Use smsService to verify OTP
+    const isValid = await verifyOTP(normalizedPhone, code);
+
+    if (!isValid) {
+      throw createError("validation", "Invalid or expired OTP", 400);
     }
 
-    const { email, password, rememberMe = false } = req.body;
-
-    const { accessToken, refreshToken, user } = await loginUser(
-      email,
-      password,
-      rememberMe,
-      req
+    // Update user's phone verification status if needed
+    const user = await User.findOneAndUpdate(
+      { phone: normalizedPhone },
+      {
+        isPhoneVerified: true,
+        phoneVerifiedAt: new Date()
+      },
+      { new: true }
     );
 
-    // Set tokens in HttpOnly cookies with Secure and SameSite attributes
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: rememberMe
-        ? parseInt(process.env.JWT_REMEMBER_ME_EXPIRES_IN, 10) * 1000
-        : parseInt(process.env.JWT_COOKIE_EXPIRES_IN, 10) * 1000,
-    });
+    if (!user) {
+      throw createError("notFound", "User not found", 404);
+    }
 
-    res.cookie('refresh_token', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: parseInt(process.env.JWT_REFRESH_COOKIE_EXPIRES_IN, 10) * 1000,
-    });
+    // Log successful verification
+    logger.info(`Phone verified successfully for user: ${user._id}`);
 
     res.status(200).json({
       success: true,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        phone: user.phone,
-        isEmailVerified: user.isEmailVerified,
-        isPhoneVerified: user.isPhoneVerified,
-      },
+      message: "Phone number verified successfully",
+      isVerified: true
     });
-  }),
-];
-
-/**
- * @desc    Refresh token
- * @route   POST /api/v1/auth/refresh-token
- * @access  Public
- */
-export const refreshTokenController = [
-  tokenRefreshRateLimiter,
-  csrfProtection,
-  asyncHandler(async (req, res, next) => {
-    const oldRefreshToken = req.cookies.refresh_token;
-
-    if (!oldRefreshToken) {
-      return next(createError('authentication', 'No refresh token provided', 401));
-    }
-
-    // Verify and rotate tokens
-    const { accessToken, refreshToken } = await rotateRefreshToken(oldRefreshToken);
-
-    // Blacklist the old refresh token
-    await addToTokenBlacklist(oldRefreshToken);
-
-    // Set new tokens in HttpOnly cookies
-    res.cookie('access_token', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: parseInt(process.env.JWT_ACCESS_EXPIRES_IN, 10) * 1000,
-    });
-
-    res.cookie('refresh_token', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: parseInt(process.env.JWT_REFRESH_EXPIRES_IN, 10) * 1000,
-    });
-
-    // Log the token rotation event
-    logger.info(`Refresh token rotated for user ${req.user.id}`);
-
-    res.status(200).json({
-      success: true,
-      accessToken,
-      refreshToken,
-    });
-  }),
-];
-
-/**
- * @desc    Google OAuth callback
- * @route   GET /api/v1/auth/google/callback
- * @access  Public
- */
-export const googleAuthCallback = [
-  asyncHandler(async (req, res, next) => {
-    if (!req.user) {
-      return next(createError('authentication', 'Authentication failed', 401));
-    }
-
-    const user = req.user;
-    const accessToken = user.generateAccessToken();
-    const refreshToken = user.generateRefreshToken();
-
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-    };
-
-    res.cookie('access_token', accessToken, {
-      ...cookieOptions,
-      maxAge: ms(process.env.JWT_ACCESS_EXPIRES_IN || '15m'),
-    });
-
-    res.cookie('refresh_token', refreshToken, {
-      ...cookieOptions,
-      maxAge: ms(process.env.JWT_REFRESH_EXPIRES_IN || '7d'),
-    });
-
-    res.redirect(`${process.env.CLIENT_URL}/auth/success`);
-  })
-];
-
-/**
- * @desc    Logout user
- * @route   POST /api/v1/auth/logout
- * @access  Private
- */
-export const logout = [
-  csrfProtection,
-  asyncHandler(async (req, res, next) => {
-    if (!req.user?.id) {
-      return next(createError('authentication', 'Not authenticated', 401));
-    }
-
-    const accessToken = req.cookies.access_token;
-    const refreshToken = req.cookies.refresh_token;
-
-    // Blacklist the tokens
-    if (accessToken) {
-      await addToTokenBlacklist(accessToken);
-    }
-    if (refreshToken) {
-      await addToTokenBlacklist(refreshToken);
-    }
-
-    // Clear cookies securely
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      expires: new Date(0),
-    };
-
-    res.cookie('access_token', '', cookieOptions);
-    res.cookie('refresh_token', '', cookieOptions);
-
-    // Log the logout event
-    logger.info(`User ${req.user.id} logged out and tokens blacklisted`);
-
-    res.status(200).json({
-      success: true,
-      message: 'Logged out successfully',
-    });
-  }),
-];
-
-/**
- * @desc    Send OTP for phone login
- * @route   POST /api/v1/auth/send-otp
- * @access  Public
- */
-export const sendPhoneOTP = [
-  otpRequestRateLimiter,
-  body('phone').notEmpty().withMessage('Phone number is required').trim().escape(),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { phone } = req.body;
-
-    await loginWithOTPService(phone, req); // Pass req to capture metadata
-
-    res.status(200).json({
-      success: true,
-      message: 'OTP sent successfully',
-    });
-  }),
-];
-
-/**
- * @desc    Verify OTP for Login
- * @route   POST /api/v1/auth/verify-otp
- * @access  Public
- */
-export const verifyPhoneOTP = [
-  body('phone').notEmpty().withMessage('Phone number is required').trim().escape(),
-  body('code').notEmpty().withMessage('OTP code is required').trim().escape(),
-  csrfProtection,
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { phone, code } = req.body;
-
-    const { accessToken, refreshToken, user } = await verifyLoginOTPService(
-      phone,
-      code,
-      req
-    );
-
-    // Set cookies with enhanced security
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-    };
-
-    res.cookie('access_token', accessToken, {
-      ...cookieOptions,
-      maxAge: parseInt(process.env.JWT_ACCESS_EXPIRES_IN, 10) * 1000 || 15 * 60 * 1000, // 15 minutes
-    });
-
-    res.cookie('refresh_token', refreshToken, {
-      ...cookieOptions,
-      maxAge: parseInt(process.env.JWT_REFRESH_EXPIRES_IN, 10) * 1000 || 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    res.status(200).json({
-      success: true,
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-        phone: user.phone,
-        isEmailVerified: user.isEmailVerified,
-        isPhoneVerified: user.isPhoneVerified,
-      },
-    });
-  }),
-];
-
-/**
- * @desc    Handle password reset request
- * @route   POST /api/v1/auth/forgot-password
- * @access  Public
- */
-export const forgotPassword = [
-  passwordResetRateLimiter,
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { email } = req.body;
-
-    await initiatePasswordReset(email);
-
-    res.status(200).json({
-      success: true,
-      message: 'Password reset instructions sent to your email.',
-    });
-  }),
-];
-
-/**
- * @desc    Handle password reset
- * @route   POST /api/v1/auth/reset-password
- * @access  Public
- */
-export const resetPasswordController = [
-  body('token').notEmpty().withMessage('Reset token is required').trim().escape(),
-  body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { token, newPassword } = req.body;
-
-    await resetPassword(token, newPassword);
-
-    res.status(200).json({
-      success: true,
-      message: 'Password has been reset successfully.',
-    });
-  }),
-];
+  } catch (error) {
+    logger.error(`OTP verification failed: ${error.message}`);
+    throw createError("validation", error.message || "Verification failed", 400);
+  }
+});

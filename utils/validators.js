@@ -615,12 +615,66 @@ export const updatePreferencesValidation = [
 export const updateSettingsValidation = [
   body("language").optional().isString().isLength({ min: 2, max: 5 }),
   body("timezone").optional().isString(),
-  body("dateFormat").optional().isIn(["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"]),
+  body("dateFormat")
+    .optional()
+    .isIn(["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"]),
   body("timeFormat").optional().isIn(["12h", "24h"]),
   body("currency").optional().isString().isLength({ min: 3, max: 3 }),
 ];
 
+export const validateTwoFactorSetup = [
+  body("phoneNumber")
+    .isString()
+    .matches(REGEX.phone)
+    .withMessage("Invalid phone number format"),
+  body("backupEmail")
+    .optional()
+    .isEmail()
+    .withMessage("Invalid backup email address"),
+];
 
+export const validateTwoFactorVerify = [
+  body("verificationCode")
+    .isString()
+    .isLength({ min: 6, max: 6 })
+    .withMessage("Verification code must be 6 digits"),
+  body("method")
+    .isString()
+    .isIn(["sms", "email", "authenticator"])
+    .withMessage("Method must be either sms, email, or authenticator"),
+];
+
+export const validateTwoFactorDisable = [
+  body("confirmationCode")
+    .isString()
+    .isLength({ min: 6, max: 6 })
+    .withMessage("Confirmation code must be 6 digits"),
+  body("password").isString().withMessage("Password is required"),
+];
+
+export const validateProfileUpdate = [
+  body("displayName").optional().isString().isLength({ min: 1, max: 50 }),
+  body("headline").optional().isString().isLength({ min: 1, max: 100 }),
+  body("avatar")
+    .optional()
+    .isString()
+    .withMessage("Avatar must be a Base64 encoded image"),
+  body("website").optional().isString().isURL(),
+  body("skills").optional().isArray(),
+  body("skills.*").optional().isString().isLength({ min: 1, max: 30 }),
+];
+
+export const validateRequest = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: "Validation Error",
+      errors: errors.array(),
+    });
+  }
+  next();
+};
 
 // Export all validators
 export default {
@@ -645,5 +699,5 @@ export default {
   archiveRestoreValidation,
   certificateGenerationValidation,
   testimonialReportValidation,
-  chatValidation
+  chatValidation,
 };

@@ -1,17 +1,22 @@
 // src/server.js
 
-import { createServer } from 'http';
-import { app, validateEnvVars } from './app.js';
-import { connectDB } from './config/db.js';
-import { redis } from './config/redis.js';
-import { logger } from './utils/logger.js';
-import './jobs/worker.js';
-import { testOpenAIConnection } from './config/openAI.js';
+import { createServer } from "http";
+import { app, validateEnvVars } from "./app.js";
+import { connectDB } from "./config/db.js";
+import { redis } from "./config/redis.js";
+import { logger } from "./utils/logger.js";
+import "./jobs/worker.js";
+import { testOpenAIConnection } from "./config/openAI.js";
+import mongoose from "mongoose";
 
-// Suppress Redis warning
+// Suppress specific Redis warnings
 const originalWarn = console.warn;
 console.warn = function (...args) {
-  if (args.some((arg) => typeof arg === "string" && arg.includes("Eviction policy"))) {
+  if (
+    args.some(
+      (arg) => typeof arg === "string" && arg.includes("Eviction policy")
+    )
+  ) {
     return;
   }
   originalWarn.apply(console, args);
@@ -24,36 +29,37 @@ const gracefulShutdown = async (signal) => {
   logger.info(`${signal} received. Starting graceful shutdown...`);
 
   const shutdownTimeout = setTimeout(() => {
-    logger.error('Forced shutdown due to timeout');
+    logger.error("Forced shutdown due to timeout");
     process.exit(1);
   }, 30000);
 
   try {
-    server.close(() => logger.info('HTTP server closed'));
+    server.close(() => logger.info("HTTP server closed"));
     await redis.quit();
     await mongoose.connection.close();
-    
+    await testOpenAIConnection(false); // Assuming a method to close OpenAI connections
+
     clearTimeout(shutdownTimeout);
-    logger.info('Graceful shutdown completed');
+    logger.info("Graceful shutdown completed");
     process.exit(0);
   } catch (error) {
-    logger.error('Error during graceful shutdown:', error);
+    logger.error("Error during graceful shutdown:", error);
     process.exit(1);
   }
 };
 
 // Process handlers
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  gracefulShutdown('Unhandled Rejection');
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error("Unhandled Rejection at:", promise, "reason:", reason);
+  gracefulShutdown("Unhandled Rejection");
 });
 
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  gracefulShutdown('Uncaught Exception');
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught Exception:", error);
+  gracefulShutdown("Uncaught Exception");
 });
 
-['SIGTERM', 'SIGINT'].forEach(signal => {
+["SIGTERM", "SIGINT"].forEach((signal) => {
   process.on(signal, () => gracefulShutdown(signal));
 });
 
@@ -64,13 +70,15 @@ const startServer = async () => {
   try {
     validateEnvVars();
     await connectDB();
-    await testOpenAIConnection();
-    
+    await testOpenAIConnection(true); // Assuming a method to test OpenAI connections
+
     server.listen(PORT, () => {
-      logger.info(`✅ Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+      logger.info(
+        `✅ Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
+      );
     });
   } catch (error) {
-    logger.error('❌ Failed to start server:', error);
+    logger.error("❌ Failed to start server:", error);
     process.exit(1);
   }
 };

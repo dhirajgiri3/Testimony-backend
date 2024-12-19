@@ -1,175 +1,76 @@
-/**
- * Creates base error object with common properties
- */
-const createBaseError = (message, statusCode = 500, extra = {}) => {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  error.status = `${statusCode}`.startsWith("4") ? "fail" : "error";
-  error.isOperational = true;
-  error.extra = extra;
-  Error.captureStackTrace(error, createBaseError);
-  return error;
-};
+// src/utils/errors.js
+
+import AppError from "./appError.js";
 
 /**
- * Error creator functions for different types of errors
+ * Create a standardized AppError
+ * @param {string} type - Error type/category
+ * @param {string} message - Error message
+ * @param {number} statusCode - HTTP status code
+ * @returns {AppError} - Custom AppError instance
  */
-export const createValidationError = (message, extra = {}) => {
-  const error = createBaseError(message, 400, extra);
-  error.name = "ValidationError";
-  return error;
-};
-
-export const createAuthenticationError = (
-  message = "Authentication failed",
-  extra = {}
-) => {
-  const error = createBaseError(message, 401, extra);
-  error.name = "AuthenticationError";
-  return error;
-};
-
-export const createAuthorizationError = (
-  message = "Not authorized to access this resource",
-  extra = {}
-) => {
-  const error = createBaseError(message, 403, extra);
-  error.name = "AuthorizationError";
-  return error;
-};
-
-export const createNotFoundError = (
-  message = "Resource not found",
-  extra = {}
-) => {
-  const error = createBaseError(message, 404, extra);
-  error.name = "NotFoundError";
-  return error;
-};
-
-export const createRateLimitError = (
-  message = "Too many requests",
-  extra = {}
-) => {
-  const error = createBaseError(message, 429, extra);
-  error.name = "RateLimitError";
-  return error;
-};
-
-export const createDatabaseError = (
-  message = "Database operation failed",
-  extra = {}
-) => {
-  const error = createBaseError(message, 500, extra);
-  error.name = "DatabaseError";
-  error.isOperational = false;
-  return error;
-};
-
-export const createOpenAIError = (message = "OpenAI API error", extra = {}) => {
-  const error = createBaseError(message, 503, extra);
-  error.name = "OpenAIError";
-  return error;
-};
-
-export const createCacheError = (
-  message = "Cache operation failed",
-  extra = {}
-) => {
-  const error = createBaseError(message, 500, extra);
-  error.name = "CacheError";
-  return error;
-};
-
-export const createFileError = (
-  message = "File operation failed",
-  extra = {}
-) => {
-  const error = createBaseError(message, 500, extra);
-  error.name = "FileError";
-  return error;
-};
-
-export const createThirdPartyAPIError = (
-  message = "Third party API error",
-  extra = {}
-) => {
-  const error = createBaseError(message, 502, extra);
-  error.name = "ThirdPartyAPIError";
-  return error;
-};
-
-export const createTimeoutError = (
-  message = "Operation timed out",
-  extra = {}
-) => {
-  const error = createBaseError(message, 504, extra);
-  error.name = "TimeoutError";
-  return error;
+export const createError = (type, message, statusCode) => {
+  return new AppError(message, statusCode, type);
 };
 
 /**
- * Factory function to create errors by type
+ * Format error response based on environment
+ * @param {AppError} err - Error instance
+ * @param {boolean} isDevelopment - Whether the environment is development
+ * @returns {Object} - Formatted error response
  */
-export const createError = (type, message, extra = {}) => {
-  const errorCreators = {
-    validation: createValidationError,
-    auth: createAuthenticationError,
-    authorization: createAuthorizationError,
-    notFound: createNotFoundError,
-    rateLimit: createRateLimitError,
-    database: createDatabaseError,
-    openai: createOpenAIError,
-    cache: createCacheError,
-    file: createFileError,
-    thirdParty: createThirdPartyAPIError,
-    timeout: createTimeoutError,
-    default: createBaseError,
-  };
-
-  const createSpecificError = errorCreators[type] || errorCreators.default;
-  return createSpecificError(message, extra);
+export const formatError = (err, isDevelopment) => {
+  if (isDevelopment) {
+    return {
+      status: err.status,
+      message: err.message,
+      stack: err.stack,
+      ...(err.errors && { errors: err.errors }),
+    };
+  } else {
+    return {
+      status: err.status,
+      message: err.isOperational ? err.message : "An unexpected error occurred",
+    };
+  }
 };
 
 /**
- * Async error handler
+ * Create Validation Error
+ * @param {string} message - Validation error message
+ * @returns {AppError} - Custom AppError instance
  */
-export const asyncErrorHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch(next);
+export const createValidationError = (message) => {
+  return new AppError(message, 400, "validation");
+};
 
 /**
- * Format error response
+ * Create Authentication Error
+ * @param {string} message - Authentication error message
+ * @returns {AppError} - Custom AppError instance
  */
-export const formatError = (err, includeStack = false) => ({
-  status: err.status || "error",
-  statusCode: err.statusCode || 500,
-  message: err.message,
-  code: err.code,
-  name: err.name,
-  ...(includeStack && err.stack ? { stack: err.stack } : {}),
-  ...(err.extra && Object.keys(err.extra).length > 0
-    ? { details: err.extra }
-    : {}),
-});
+export const createAuthenticationError = (message) => {
+  return new AppError(message, 401, "authentication");
+};
 
-export const OpenAIError = createOpenAIError("OpenAI API error", {
-  code: "openai_error",
-});
+/**
+ * Create Authorization Error
+ * @param {string} message - Authorization error message
+ * @returns {AppError} - Custom AppError instance
+ */
+export const createAuthorizationError = (message) => {
+  return new AppError(message, 403, "authorization");
+};
 
-export default {
-  createError,
-  createValidationError,
-  createAuthenticationError,
-  createAuthorizationError,
-  createNotFoundError,
-  createRateLimitError,
-  createDatabaseError,
-  createOpenAIError,
-  createCacheError,
-  createFileError,
-  createThirdPartyAPIError,
-  createTimeoutError,
-  asyncErrorHandler,
-  formatError,
-  OpenAIError,
+/**
+ * Create Not Found Error
+ * @param {string} message - Not Found error message
+ * @returns {AppError} - Custom AppError instance
+ */
+export const createNotFoundError = (message) => {
+  return new AppError(message, 404, "notFound");
+};
+
+export const OpenAIError = (message) => {
+  return new AppError(message, 500, "openai");
 };

@@ -1,6 +1,7 @@
+// src/models/User.js
+
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
 const userSchema = new mongoose.Schema(
@@ -23,11 +24,27 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      match: [
+        /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+        "Please provide a valid email address",
+      ],
+    },
+    username: {
+      type: String,
+      required: [true, "Please provide a username"],
+      unique: true,
+      trim: true,
+      minlength: [3, "Username must be at least 3 characters"],
+      maxlength: [30, "Username cannot exceed 30 characters"],
+      match: [
+        /^[a-zA-Z0-9_]+$/,
+        "Username can only contain letters, numbers, and underscores",
+      ],
     },
     password: {
       type: String,
       required: [true, "Please provide a password"],
-      minlength: 8,
+      minlength: [8, "Password must be at least 8 characters"],
       select: false,
     },
     role: {
@@ -35,15 +52,13 @@ const userSchema = new mongoose.Schema(
       enum: ["seeker", "giver", "admin"],
       default: "seeker",
     },
-    phone: {
+    provider: {
       type: String,
-      required: false,
-      unique: true,
-      sparse: true,
-      match: [
-        /^\+[1-9]\d{1,14}$/,
-        "Phone number must be in E.164 format (e.g., +1234567890)",
-      ],
+      enum: ["local", "google"],
+      default: "local",
+    },
+    googleId: {
+      type: String,
     },
     isEmailVerified: {
       type: Boolean,
@@ -53,78 +68,108 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    emailVerificationToken: String,
-    emailVerificationTokenExpiry: Date,
-    resetPasswordToken: String,
-    resetPasswordExpiry: Date,
-    googleId: {
+    phone: {
       type: String,
-      unique: true,
-      sparse: true,
+      validate: {
+        validator: function (v) {
+          return /^\+\d{10,15}$/.test(v);
+        },
+        message: (props) => `${props.value} is not a valid phone number!`,
+      },
     },
-    loginAttempts: {
-      type: Number,
-      default: 0,
-    },
-    lockedUntil: Date,
-    provider: {
+    profilePicture: {
       type: String,
-      enum: ["local", "google"],
-      default: "local",
+      default: "default.jpg",
     },
+    bio: {
+      type: String,
+      maxlength: [500, "Bio cannot exceed 500 characters"],
+    },
+    dateOfBirth: {
+      type: Date,
+    },
+    // Two-Factor Authentication Fields
+    isTwoFactorEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    twoFactorCode: {
+      type: String,
+      select: false,
+    },
+    twoFactorExpires: {
+      type: Date,
+    },
+    // Token Version for Invalidation
     tokenVersion: {
       type: Number,
       default: 0,
     },
-    passwordChangedAt: Date,
+    // Email Verification Fields
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationTokenExpiry: {
+      type: Date,
+    },
+    // Password Reset Fields
+    resetPasswordToken: {
+      type: String,
+      select: false,
+    },
+    resetPasswordExpiry: {
+      type: Date,
+    },
+    // Account Status
     isActive: {
       type: Boolean,
       default: true,
+      select: false,
     },
-    otp: {
-      code: String,
-      expiresAt: Date,
-    },
-    userAgent: String,
-    ipAddress: String,
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    // Additional fields as needed
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
-// Collation for case-insensitive queries
-userSchema.index(
-  { email: 1 },
-  { unique: true, collation: { locale: "en", strength: 2 } }
-);
-userSchema.index({ phone: 1 }, { unique: true, sparse: true });
+// Virtual for full name
+userSchema.virtual("fullName").get(function () {
+  return `${this.firstName} ${this.lastName}`;
+});
 
-// Encrypt password before saving
+// Pre-save hook to hash password if modified
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
 
-  const salt = await bcrypt.genSalt(10);
+  const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
-
-  // Set passwordChangedAt if password is modified and not new
-  if (!this.isNew) {
-    this.passwordChangedAt = Date.now() - 1000; // Ensure it's set before the token's iat
-  }
-
   next();
 });
 
-// Compare user entered password with hashed password
+// Pre-save hook to update passwordChangedAt
+userSchema.pre("save", function (next) {
+  if (!this.isModified("password") || this.isNew) return next();
+
+  this.passwordChangedAt = Date.now() - 1000;
+  next();
+});
+
+// Query middleware to exclude inactive users
+userSchema.pre(/^find/, function (next) {
+  this.find({ isActive: { $ne: false } });
+  next();
+});
+
+// Method to compare passwords
 userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
-// Check if password was changed after token was issued
-userSchema.methods.passwordChangedAfter = function (JWTTimestamp) {
+// Method to check if password was changed after token issuance
+userSchema.methods.changedPasswordAfter = function (JWTTimestamp) {
   if (this.passwordChangedAt) {
     const changedTimestamp = parseInt(
       this.passwordChangedAt.getTime() / 1000,
@@ -132,53 +177,42 @@ userSchema.methods.passwordChangedAfter = function (JWTTimestamp) {
     );
     return JWTTimestamp < changedTimestamp;
   }
-
-  // False means NOT changed
   return false;
 };
 
-// Increment Token Version to invalidate existing refresh tokens
-userSchema.methods.incrementTokenVersion = function() {
-  this.tokenVersion += 1;
-  return this.save();
-};
-
-// Generate JWT Access Token
-userSchema.methods.generateAccessToken = function () {
-  return jwt.sign(
-    { id: this._id, role: this.role, tokenVersion: this.tokenVersion },
-    process.env.JWT_ACCESS_SECRET,
-    {
-      expiresIn: process.env.JWT_ACCESS_EXPIRES_IN || "15m",
-    }
-  );
-};
-
-// Generate JWT Refresh Token
-userSchema.methods.generateRefreshToken = function () {
-  return jwt.sign(
-    { id: this._id, role: this.role, tokenVersion: this.tokenVersion },
-    process.env.JWT_REFRESH_SECRET,
-    {
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "7d",
-    }
-  );
-};
-
-// Generate Email Verification Token
+// Method to generate email verification token
 userSchema.methods.generateEmailVerificationToken = function () {
-  const verificationToken = crypto.randomBytes(20).toString("hex");
-
-  // Hash token and set to emailVerificationToken field
+  const token = crypto.randomBytes(32).toString("hex");
   this.emailVerificationToken = crypto
     .createHash("sha256")
-    .update(verificationToken)
+    .update(token)
     .digest("hex");
-
-  // Set expire time
   this.emailVerificationTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  return token;
+};
 
-  return verificationToken;
+// Method to generate password reset token
+userSchema.methods.generatePasswordResetToken = function () {
+  const token = crypto.randomBytes(32).toString("hex");
+  this.resetPasswordToken = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+  this.resetPasswordExpiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+  return token;
+};
+
+// Method to generate two-factor authentication code
+userSchema.methods.generateTwoFactorCode = function () {
+  const code = crypto.randomInt(100000, 999999).toString();
+  this.twoFactorCode = crypto.createHash("sha256").update(code).digest("hex");
+  this.twoFactorExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  return code;
+};
+
+// Method to deactivate account
+userSchema.methods.deactivateAccount = function () {
+  this.isActive = false;
 };
 
 const User = mongoose.model("User", userSchema);

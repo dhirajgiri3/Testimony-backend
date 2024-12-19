@@ -15,11 +15,6 @@ export const aiRateLimiter = rateLimit({
   message: "Too many requests from this IP, please try again later"
 });
 
-/**
- * @desc    Generate AI Testimonial Suggestion
- * @route   POST /api/v1/ai/generate-testimonial
- * @access  Private (Seeker)
- */
 export const generateAITestimonialSuggestion = [
   aiRateLimiter,
   body('projectDetails').isString().withMessage('Project details must be a string'),
@@ -71,11 +66,6 @@ export const generateAITestimonialSuggestion = [
   })
 ];
 
-/**
- * @desc    Handle Conversational Analytics Queries
- * @route   POST /api/v1/ai/chat
- * @access  Private (Seeker)
- */
 export const handleChatQuery = [
   aiRateLimiter,
   body('query').isString().withMessage('Query must be a string'),
@@ -138,11 +128,6 @@ export const handleChatQuery = [
   })
 ];
 
-/**
- * @desc    Get Advanced Insights
- * @route   POST /api/v1/ai/advanced-insights
- * @access  Private (Seeker)
- */
 export const getAdvancedInsights = [
   aiRateLimiter,
   body('insightsQuery').isString().withMessage('Insights query must be a string'),

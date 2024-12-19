@@ -1,13 +1,16 @@
 // src/middlewares/validate.js
 
 import { validationResult } from "express-validator";
-import { logger } from "../utils/logger.js";
+import AppError from '../utils/appError.js';
 
+/**
+ * Middleware to validate request using express-validator
+ */
 export const validateRequest = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    logger.warn("Validation errors:", errors.array());
-    return res.status(400).json({ errors: errors.array() });
+    const extractedErrors = errors.array().map(err => err.msg).join(', ');
+    throw new AppError(extractedErrors, 400);
   }
   next();
 };

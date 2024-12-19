@@ -2,112 +2,163 @@
 
 import { pipeline } from "@huggingface/transformers";
 import { logger } from "../utils/logger.js";
+import { Configuration, OpenAIApi } from "openai";
+import AppError from "../utils/appError.js";
 
-/**
- * Initialize NLP Pipelines
- */
-const sentimentPipeline = pipeline("sentiment-analysis");
-const emotionPipeline = pipeline("text-classification", {
-  model: "j-hartmann/emotion-english-distilroberta-base",
-});
-const nerPipeline = pipeline("ner", { grouped_entities: true });
+// Initialize HuggingFace pipelines with error handling
+let sentimentPipeline;
+let emotionPipeline;
+let nerPipeline;
 
-/**
- * Extract Skills from Testimonial Text using spaCy-like NER
- * @param {string} text
- * @returns {Array<string>} Extracted skills
- */
-export const extractSkills = async (text) => {
+const initializePipelines = async () => {
   try {
-    // Assuming skills are labeled as 'SKILL' in NER model
-    const nerResults = await nerPipeline(text);
-    const skills = nerResults
-      .filter((entity) => entity.entity_group === "SKILL")
-      .map((entity) => entity.word);
-    return skills;
-  } catch (error) {
-    logger.error("❌ Error extracting skills:", error);
-    return [];
-  }
-};
-
-/**
- * Analyze Sentiment of Testimonial Text using HuggingFace BERT
- * @param {string} text
- * @returns {Object} Sentiment label and score
- */
-export const analyzeSentiment = async (text) => {
-  try {
-    const sentiment = await sentimentPipeline(text);
-    // Convert to score between -1 to 1
-    const score =
-      sentiment[0].label === "POSITIVE"
-        ? sentiment[0].score
-        : -sentiment[0].score;
-    return { label: sentiment[0].label, score };
-  } catch (error) {
-    logger.error("❌ Error analyzing sentiment:", error);
-    return { label: "NEUTRAL", score: 0 };
-  }
-};
-
-/**
- * Analyze Emotions in Testimonial Text using HuggingFace Emotion Model
- * @param {string} text
- * @returns {Object} Emotion scores
- */
-export const analyzeEmotions = async (text) => {
-  try {
-    const emotions = await emotionPipeline(text);
-    const emotionScores = {};
-    emotions.forEach((emotion) => {
-      emotionScores[emotion.label.toLowerCase()] = emotion.score;
+    sentimentPipeline = await pipeline("sentiment-analysis");
+    emotionPipeline = await pipeline("text-classification", {
+      model: "j-hartmann/emotion-english-distilroberta-base",
     });
-    return emotionScores;
+    nerPipeline = await pipeline("ner", { grouped_entities: true });
   } catch (error) {
-    logger.error("❌ Error analyzing emotions:", error);
-    return {};
+    logger.error(`❌ Pipeline Initialization Error: ${error.message}`);
+    throw new AppError("Failed to initialize NLP pipelines", 500);
   }
 };
 
+// Initialize OpenAI API
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+const openai = new OpenAIApi(configuration);
+
+// Call initialization
+initializePipelines();
+
 /**
- * Categorize Project based on Project Details using NLP
+ * Generate AI Testimonial Suggestion
  * @param {string} projectDetails
- * @returns {string} Project Category
+ * @param {Array<string>} skills
+ * @returns {string} Suggested Testimonial
  */
-export const categorizeProject = async (projectDetails) => {
+export const generateAITestimonialSuggestion = async (
+  projectDetails,
+  skills = []
+) => {
   try {
     const prompt = `
-    Categorize the following project details into one of the predefined categories: Web Development, Mobile Development, Marketing, Design, Consulting, Content Creation, Other.
+      You are an AI assistant that helps users generate professional testimonials based on project details and skills.
 
-    Project Details:
-    "${projectDetails}"
+      Project Details:
+      "${projectDetails}"
 
-    Category:
+      Skills:
+      ${skills.join(", ")}
+
+      Provide a well-structured testimonial that highlights the user's expertise and the success of the project.
     `;
 
     const response = await openai.createCompletion({
-      model: "gpt-4",
+      model: "text-davinci-003",
       prompt,
-      max_tokens: 10,
-      temperature: 0.3,
-      n: 1,
-      stop: ["\n"],
+      max_tokens: 150,
+      temperature: 0.7,
+      top_p: 1,
+      frequency_penalty: 0,
+      presence_penalty: 0,
     });
 
-    const category = response.data.choices[0].text.trim().replace(/["']/g, "");
-    const validCategories = [
-      "Web Development",
-      "Mobile Development",
-      "Marketing",
-      "Design",
-      "Consulting",
-      "Content Creation",
-      "Other",
-    ];
-    return validCategories.includes(category) ? category : "Other";
+    const suggestion = response.data.choices[0].text.trim();
+    return suggestion;
   } catch (error) {
-    logger.error("❌ Error categorizing project:", error);
-    return "Other";
+    logger.error(`❌ AI Testimonial Suggestion Error: ${error.message}`);
+    throw new AppError("Failed to generate testimonial suggestion", 500);
   }
+};
+
+/**
+ * Handle Chat Query using OpenAI's ChatGPT
+ * @param {string} query
+ * @returns {string} Chat Response
+ */
+export const handleChatQuery = async (query) => {
+  try {
+    const response = await openai.createChatCompletion({
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: query },
+      ],
+      max_tokens: 500,
+      temperature: 0.7,
+    });
+
+    const chatResponse = response.data.choices[0].message.content.trim();
+    return chatResponse;
+  } catch (error) {
+    logger.error(`❌ Chat Query Error: ${error.message}`);
+    throw new AppError("Failed to process chat query", 500);
+  }
+};
+
+/**
+ * Get Advanced Insights for a Seeker
+ * @param {string} seekerId
+ * @returns {Object} Advanced Insights
+ */
+export const getAdvancedInsights = async (seekerId) => {
+  try {
+    // Fetch seeker data (implementation needed)
+    const seekerData = await fetchSeekerData(seekerId);
+
+    if (!seekerData) {
+      throw new AppError("Seeker data not found", 404);
+    }
+
+    // Analyze sentiments
+    const sentiments = await sentimentPipeline(seekerData.testimonials);
+    const averageSentiment =
+      sentiments.reduce((acc, curr) => acc + (curr.score || 0), 0) / sentiments.length;
+
+    // Extract top skills
+    const skills = await nerPipeline(seekerData.profile);
+    const topSkills = extractTopSkills(skills);
+
+    // Example Insight Generation
+    const insights = {
+      averageSentiment: averageSentiment > 0.5 ? "Positive" : "Neutral/Negative",
+      topSkills,
+      projectSuccessRate: "95%",
+    };
+
+    return insights;
+  } catch (error) {
+    logger.error(`❌ Get Advanced Insights Error: ${error.message}`);
+    throw new AppError("Failed to retrieve advanced insights", 500);
+  }
+};
+
+/**
+ * Placeholder function to fetch seeker data
+ * @param {string} seekerId
+ * @returns {Object} Seeker Data
+ */
+const fetchSeekerData = async (seekerId) => {
+  // Implement actual data fetching logic
+  return {
+    testimonials: ["Great work on the project!", "Highly skilled and professional."],
+    profile: "Expert in JavaScript, Node.js, and Express.",
+  };
+};
+
+/**
+ * Extract top skills from NER results
+ * @param {Array} nerResults
+ * @returns {Array<string>} Top Skills
+ */
+const extractTopSkills = (nerResults) => {
+  const skillSet = new Set();
+  nerResults.forEach((entity) => {
+    if (entity.entity === "SKILL") {
+      skillSet.add(entity.word);
+    }
+  });
+  return Array.from(skillSet).slice(0, 5);
 };

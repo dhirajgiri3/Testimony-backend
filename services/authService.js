@@ -1,4 +1,3 @@
-import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import User from "../models/User.js";
 import ActivityLog from "../models/ActivityLog.js";
@@ -11,44 +10,33 @@ import {
 import { createError } from "../utils/errors.js";
 import { addToTokenBlacklist } from "./tokenBlacklistService.js";
 import { logger } from "../utils/logger.js";
-import { body, validationResult } from "express-validator";
 
 /**
  * Register a new user
- * @param {Object} userData - { firstName, lastName, email, password, phone }
+ * @param {Object} userData - { firstName, lastName, email, password, username, phone }
  * @returns {Object} created user and verification token
  */
-export const registerUser = async (userData) => {
-    const { firstName, lastName, email, password, phone } = userData;
+export const registerUser = async ({ firstName, lastName, email, password, username, phone }) => {
+  const existingUser = await User.findOne({ email }).collation({ locale: 'en', strength: 2 });
+  if (existingUser) {
+    throw new AppError("Email already in use", 400);
+  }
 
-    // Use case-insensitive query with collation
-    const userExists = await User.findOne({
-        $or: [{ email: email }, { phone }],
-    }).collation({ locale: "en", strength: 2 });
+  const user = await User.create({
+    firstName,
+    lastName,
+    email,
+    password,
+    username,
+    phone,
+  });
 
-    if (userExists) {
-        throw createError('validation', 'User already exists with this email or phone number', 400);
-    }
+  const verificationToken = user.generateEmailVerificationToken();
+  await user.save({ validateBeforeSave: false });
 
-    // Create user
-    const user = await User.create({
-        firstName,
-        lastName,
-        email: email.toLowerCase(), // Store email in lowercase
-        password,
-        phone,
-        provider: "local",
-    });
+  logger.info(`New user registered: ${user.id}`);
 
-    if (!user) {
-        throw createError('validation', 'Invalid user data', 400);
-    }
-
-    // Generate verification token
-    const verificationToken = user.generateEmailVerificationToken();
-    await user.save({ validateBeforeSave: false });
-
-    return { user, verificationToken };
+  return { user, verificationToken };
 };
 
 /**
@@ -81,69 +69,26 @@ export const resendVerificationEmailService = async (email) => {
 };
 
 /**
- * Login user with email and password
- * @param {string} email
- * @param {string} password
- * @param {boolean} rememberMe
- * @param {Object} req - Express request object
- * @returns {Object} tokens and user
+ * Login user and generate tokens
+ * @param {Object} credentials - { email, password, rememberMe, req }
+ * @returns {Object} accessToken, refreshToken, user
  */
-export const loginUser = async (email, password, rememberMe, req) => {
-    const user = await User.findOne({ email: email.toLowerCase() }).select(
-        "+password"
-    );
+export const loginUser = async ({ email, password, rememberMe, req }) => {
+  const user = await User.findOne({ email }).select('+password');
 
-    if (!user) {
-        throw createError('authentication', 'Invalid credentials', 401);
-    }
+  if (!user || !(await user.matchPassword(password))) {
+    throw new AppError("Invalid email or password", 401);
+  }
 
-    // Check if account is locked
-    if (user.lockedUntil && user.lockedUntil > Date.now()) {
-        const waitTime = Math.ceil((user.lockedUntil - Date.now()) / 1000 / 60);
-        throw createError('authentication', `Account is locked. Please try again in ${waitTime} minutes`, 403);
-    }
+  if (!user.isEmailVerified) {
+    throw new AppError("Please verify your email before logging in", 401);
+  }
 
-    // Check password
-    const isMatch = await user.matchPassword(password);
-    if (!isMatch) {
-        await updateLoginAttempts(user);
+  const { accessToken, refreshToken } = tokenService.generateTokens(user);
 
-        // Log failed attempt
-        await ActivityLog.create({
-            user: user._id,
-            action: "LOGIN_FAILED",
-            details: { reason: "Invalid password" },
-        });
+  logger.info(`User logged in: ${user.id}`);
 
-        throw createError('authentication', 'Invalid credentials', 401);
-    }
-
-    // Check if verified
-    if (!user.isEmailVerified) {
-        throw createError('authentication', 'Please verify your email to login', 401);
-    }
-
-    // Reset login attempts and lock status
-    user.loginAttempts = 0;
-    user.lockedUntil = null;
-    user.lastLogin = Date.now();
-    await user.save();
-
-    // Capture request metadata
-    user.userAgent = req.headers["user-agent"];
-    user.ipAddress = req.ip;
-
-    const accessToken = createAccessToken(user);
-    const refreshToken = createRefreshToken(user);
-
-    // Log successful login
-    await ActivityLog.create({
-        user: user._id,
-        action: "LOGIN_SUCCESS",
-        details: { rememberMe },
-    });
-
-    return { accessToken, refreshToken, user };
+  return { accessToken, refreshToken, user };
 };
 
 /**
@@ -169,44 +114,33 @@ const updateLoginAttempts = async (user) => {
 };
 
 /**
- * Logout user
+ * Logout user and blacklist tokens
  * @param {string} accessToken
  * @param {string} refreshToken
- * @param {string} userId
  */
-export const logoutUser = async (accessToken, refreshToken, userId) => {
-    try {
-        if (accessToken) {
-            await addToTokenBlacklist(accessToken, "access");
-        }
-        if (refreshToken) {
-            await addToTokenBlacklist(refreshToken, "refresh");
-        }
+export const logoutUser = async (accessToken, refreshToken) => {
+  if (accessToken) {
+    await addToTokenBlacklist(accessToken);
+  }
+  if (refreshToken) {
+    await addToTokenBlacklist(refreshToken);
+  }
 
-        if (userId) {
-            await ActivityLog.create({
-                user: userId,
-                action: "LOGOUT",
-            });
-        }
-    } catch (error) {
-        logger.error("Logout service error:", error);
-        throw createError('processing', 'Error during logout', 500);
-    }
+  logger.info(`Tokens blacklisted for logout.`);
 };
 
 /**
  * Refresh tokens
  * @param {string} oldRefreshToken
- * @returns {Object} new tokens
+ * @returns {Object} new accessToken and refreshToken
  */
 export const refreshTokens = async (oldRefreshToken) => {
-    try {
-        return await rotateRefreshToken(oldRefreshToken);
-    } catch (error) {
-        logger.error("Token refresh error:", error);
-        throw createError('processing', 'Error refreshing tokens', 500);
-    }
+  if (!oldRefreshToken) {
+    throw new AppError('No refresh token provided', 401);
+  }
+
+  const { accessToken, refreshToken } = await tokenService.rotateRefreshToken(oldRefreshToken);
+  return { accessToken, refreshToken };
 };
 
 /**
@@ -312,51 +246,6 @@ export const verifyLoginOTPService = async (phone, code, req) => {
 };
 
 /**
- * Handle password reset request
- * @param {string} email
- * @returns {void}
- */
-export const initiatePasswordReset = async (email) => {
-    const user = await User.findOne({ email: email.toLowerCase() });
-
-    if (!user) {
-        throw createError('notFound', 'User not found', 404);
-    }
-
-    // Generate reset token
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
-
-    user.passwordResetToken = resetTokenHash;
-    user.passwordResetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour
-    await user.save({ validateBeforeSave: false });
-
-    // Send reset email
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
-    
-    await sendEmail({
-        to: user.email,
-        subject: 'Password Reset Request',
-        template: 'passwordReset',
-        context: {
-            resetUrl
-        }
-    });
-
-    // Log the password reset request
-    await ActivityLog.create({
-        user: user.id,
-        action: "PASSWORD_RESET_REQUEST",
-        details: {
-            ip: user.lastLoginIP || 'Unknown',
-            userAgent: user.lastLoginUserAgent || 'Unknown'
-        }
-    });
-
-    logger.info(`Password reset initiated for user: ${user.id}`);
-};
-
-/**
  * Complete password reset
  * @param {string} token
  * @param {string} newPassword
@@ -392,3 +281,107 @@ export const resetPassword = async (token, newPassword) => {
     logger.info(`Password reset successful for user: ${user.id}`);
     return user;
 };
+
+/**
+ * Enable Two-Factor Authentication for a user
+ * @param {string} userId
+ */
+export const enableTwoFactorAuthentication = async (userId) => {
+  await User.findByIdAndUpdate(userId, { isTwoFactorEnabled: true });
+};
+
+/**
+ * Generate and return 2FA secret and QR code
+ * @param {string} userId
+ * @returns {Object} { secret, qrCode }
+ */
+export const generate2FASecret = async (userId) => {
+  const secret = twoFactor.generateSecret({ name: 'TestimonyApp' });
+  const qrCode = twoFactor.generateQRCode(secret.otpauth_url);
+
+  // Save secret temporarily; enable upon verification
+  await User.findByIdAndUpdate(userId, { twoFactorSecret: secret.base32 });
+
+  return { secret: secret.base32, qrCode };
+};
+
+/**
+ * Verify 2FA token
+ * @param {string} userId
+ * @param {string} token
+ * @returns {boolean}
+ */
+export const verify2FAToken = async (userId, token) => {
+  const user = await User.findById(userId);
+  if (!user || !user.twoFactorSecret) return false;
+
+  return twoFactor.verifyToken(user.twoFactorSecret, token);
+};
+
+/**
+ * Set token cookies
+ * @param {Object} res - Express response object
+ * @param {string} accessToken
+ * @param {string} refreshToken
+ * @param {boolean} rememberMe
+ */
+export const setTokenCookies = (res, accessToken, refreshToken, rememberMe) => {
+  res.cookie('access_token', accessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: rememberMe
+      ? parseInt(process.env.JWT_REMEMBER_ME_EXPIRES_IN, 10) * 1000
+      : parseInt(process.env.JWT_COOKIE_EXPIRES_IN, 10) * 1000,
+  });
+
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: parseInt(process.env.JWT_REFRESH_COOKIE_EXPIRES_IN, 10) * 1000,
+  });
+
+  logger.info('Token cookies set.');
+};
+
+export const initiatePasswordReset = async (email, req) => {
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+twoFactorSecret +isTwoFactorEnabled');
+
+    if (!user) {
+        throw createError('notFound', 'User not found', 404);
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+    user.passwordResetToken = resetTokenHash;
+    user.passwordResetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour
+    await user.save();
+
+    // Send reset email
+    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+
+    await sendEmail({
+        to: user.email,
+        subject: 'Password Reset Request',
+        template: 'passwordReset',
+        context: {
+            resetUrl
+        }
+    });
+
+    // Log the password reset request
+    await ActivityLog.create({
+        user: user._id,
+        action: "PASSWORD_RESET_REQUEST",
+        details: {
+            ip: req.ip || 'Unknown',
+            userAgent: req.headers["user-agent"] || 'Unknown'
+        }
+    });
+
+    logger.info(`Password reset initiated for user: ${user._id}`);
+};
+
