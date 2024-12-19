@@ -24,24 +24,8 @@ export const generateFeedback = async (testimonialText) => {
     const feedback = response.data.choices[0].text.trim();
     return feedback;
   } catch (error) {
-    if (error.response) {
-      if (error.response.status === 429) {
-        logger.error("❌ Rate limit exceeded. Please try again later.");
-        throw new Error("Rate limit exceeded. Please try again later.");
-      } else if (error.response.data && error.response.data.error && error.response.data.error.code === "insufficient_quota") {
-        logger.error("❌ Quota exceeded. Please upgrade your OpenAI plan.");
-        throw new Error("Quota exceeded. Please upgrade your OpenAI plan.");
-      } else {
-        logger.error(`❌ OpenAI API Error: ${error.response.status} - ${error.response.data.error.message}`);
-        throw new Error(`OpenAI API Error: ${error.response.data.error.message}`);
-      }
-    } else if (error.request) {
-      logger.error("❌ No response received from OpenAI API.");
-      throw new Error("No response received from OpenAI API.");
-    } else {
-      logger.error(`❌ OpenAI Service Error: ${error.message}`);
-      throw new Error("Failed to generate AI feedback.");
-    }
+    console.error("❌ Error generating AI feedback:", error);
+    throw new Error("Failed to generate AI feedback");
   }
 };
 
@@ -67,24 +51,8 @@ export const extractSkills = async (testimonialText) => {
       .map((s) => s.trim());
     return skills;
   } catch (error) {
-    if (error.response) {
-      if (error.response.status === 429) {
-        logger.error("❌ Rate limit exceeded. Please try again later.");
-        throw new Error("Rate limit exceeded. Please try again later.");
-      } else if (error.response.data && error.response.data.error && error.response.data.error.code === "insufficient_quota") {
-        logger.error("❌ Quota exceeded. Please upgrade your OpenAI plan.");
-        throw new Error("Quota exceeded. Please upgrade your OpenAI plan.");
-      } else {
-        logger.error(`❌ OpenAI API Error: ${error.response.status} - ${error.response.data.error.message}`);
-        throw new Error(`OpenAI API Error: ${error.response.data.error.message}`);
-      }
-    } else if (error.request) {
-      logger.error("❌ No response received from OpenAI API.");
-      throw new Error("No response received from OpenAI API.");
-    } else {
-      logger.error(`❌ OpenAI Service Error: ${error.message}`);
-      throw new Error("Failed to extract skills.");
-    }
+    console.error("❌ Error extracting skills:", error);
+    throw new Error("Failed to extract skills");
   }
 };
 
@@ -102,23 +70,7 @@ export const generateResponse = async (userMessage) => {
     const reply = response.data.choices[0].message.content;
     return reply;
   } catch (error) {
-    if (error.response) {
-      if (error.response.status === 429) {
-        logger.error("❌ Rate limit exceeded. Please try again later.");
-        throw new Error("Rate limit exceeded. Please try again later.");
-      } else if (error.response.data && error.response.data.error && error.response.data.error.code === "insufficient_quota") {
-        logger.error("❌ Quota exceeded. Please upgrade your OpenAI plan.");
-        throw new Error("Quota exceeded. Please upgrade your OpenAI plan.");
-      } else {
-        logger.error(`❌ OpenAI API Error: ${error.response.status} - ${error.response.data.error.message}`);
-        throw new Error(`OpenAI API Error: ${error.response.data.error.message}`);
-      }
-    } else if (error.request) {
-      logger.error("❌ No response received from OpenAI API.");
-      throw new Error("No response received from OpenAI API.");
-    } else {
-      logger.error(`❌ OpenAI Service Error: ${error.message}`);
-      throw new Error("Failed to generate response from OpenAI.");
-    }
+    logger.error(`OpenAI Service Error: ${error.message}`);
+    throw new Error("Failed to generate response from OpenAI.");
   }
 };
