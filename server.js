@@ -6,6 +6,7 @@ import { connectDB } from './config/db.js';
 import { redis } from './config/redis.js';
 import { logger } from './utils/logger.js';
 import './jobs/worker.js';
+import { testOpenAIConnection } from './config/openAI.js';
 
 // Suppress Redis warning
 const originalWarn = console.warn;
@@ -63,6 +64,7 @@ const startServer = async () => {
   try {
     validateEnvVars();
     await connectDB();
+    await testOpenAIConnection();
     
     server.listen(PORT, () => {
       logger.info(`✅ Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);

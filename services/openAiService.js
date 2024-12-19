@@ -10,7 +10,7 @@ dotenv.config();
  */
 function handleOpenAIError(error) {
   if (error.status) {
-    // This is likely an HTTPError with a status code
+    // HTTPError from OpenAI
     if (error.status === 429) {
       logger.error("❌ Rate limit exceeded. Please try again later.");
       throw new Error("Rate limit exceeded. Please try again later.");
@@ -25,10 +25,12 @@ function handleOpenAIError(error) {
       logger.error(
         `❌ OpenAI API Error: ${error.status} - ${error.body?.error?.message || error.message}`
       );
-      throw new Error(`OpenAI API Error: ${error.body?.error?.message || error.message}`);
+      throw new Error(
+        `OpenAI API Error: ${error.body?.error?.message || error.message}`
+      );
     }
   } else {
-    // Some other error (network issues, etc.)
+    // Some other kind of error (network issues, etc.)
     logger.error(`❌ OpenAI Service Error: ${error.message}`);
     throw new Error("Failed to process request using OpenAI.");
   }
