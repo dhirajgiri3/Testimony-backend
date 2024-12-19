@@ -8,8 +8,6 @@ import {
   loginWithOTPService,
   verifyLoginOTPService,
   refreshTokens,
-  initiatePasswordReset,
-  resetPassword,
 } from '../services/authService.js';
 import { addToTokenBlacklist } from '../services/tokenBlacklistService.js';
 import { createVerificationEmailTemplate, createPasswordResetEmailTemplate } from '../utils/emailTemplates.js';
@@ -20,7 +18,6 @@ import {
   tokenRefreshRateLimiter,
   otpRequestRateLimiter,
   emailRateLimiter,
-  passwordResetRateLimiter,
 } from '../middlewares/rateLimiter.js';
 import { rotateRefreshToken } from '../services/tokenService.js';
 import { body, validationResult } from 'express-validator';
@@ -360,56 +357,6 @@ export const verifyPhoneOTP = [
         isEmailVerified: user.isEmailVerified,
         isPhoneVerified: user.isPhoneVerified,
       },
-    });
-  }),
-];
-
-/**
- * @desc    Handle password reset request
- * @route   POST /api/v1/auth/forgot-password
- * @access  Public
- */
-export const forgotPassword = [
-  passwordResetRateLimiter,
-  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { email } = req.body;
-
-    await initiatePasswordReset(email);
-
-    res.status(200).json({
-      success: true,
-      message: 'Password reset instructions sent to your email.',
-    });
-  }),
-];
-
-/**
- * @desc    Handle password reset
- * @route   POST /api/v1/auth/reset-password
- * @access  Public
- */
-export const resetPasswordController = [
-  body('token').notEmpty().withMessage('Reset token is required').trim().escape(),
-  body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
-  asyncHandler(async (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
-    }
-
-    const { token, newPassword } = req.body;
-
-    await resetPassword(token, newPassword);
-
-    res.status(200).json({
-      success: true,
-      message: 'Password has been reset successfully.',
     });
   }),
 ];

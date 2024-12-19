@@ -11,48 +11,6 @@ import csrf from 'csurf';
 const csrfProtection = csrf({ cookie: true });
 
 /**
- * Middleware to handle JWT token verification
- */
-export const verifyToken = asyncHandler(async (req, res, next) => {
-    let accessToken;
-
-    // Check for token in cookies
-    if (req.cookies && req.cookies.access_token) {
-        accessToken = req.cookies.access_token;
-    }
-
-    if (!accessToken) {
-        return next(createError('authentication', 'Not authorized to access this route', 401));
-    }
-
-    // Check if token is blacklisted
-    const isBlacklisted = await isTokenBlacklisted(accessToken);
-    if (isBlacklisted) {
-        return next(createError('authentication', 'Token has been revoked', 401));
-    }
-
-    try {
-        const decoded = jwt.verify(accessToken, process.env.JWT_ACCESS_SECRET);
-
-        const user = await User.findById(decoded.id);
-        if (!user) {
-            return next(createError('authentication', 'No user found with this ID', 404));
-        }
-
-        // Check if user changed password after token was issued
-        if (user.passwordChangedAfter(decoded.iat)) {
-            return next(createError('authentication', 'User recently changed password. Please log in again.', 401));
-        }
-
-        req.user = user;
-        next();
-    } catch (error) {
-        logger.error('Authentication error:', error);
-        return next(createError('authentication', 'Not authorized to access this route', 401));
-    }
-});
-
-/**
  * Protect routes by verifying JWT tokens from HttpOnly cookies
  */
 export const protect = [
@@ -62,9 +20,43 @@ export const protect = [
         message: 'Too many requests from this IP, please try again later.'
     }),
     csrfProtection,
-    verifyToken,
     asyncHandler(async (req, res, next) => {
-        next();
+        let accessToken;
+
+        // Check for token in cookies
+        if (req.cookies && req.cookies.access_token) {
+            accessToken = req.cookies.access_token;
+        }
+
+        if (!accessToken) {
+            return next(createError('authentication', 'Not authorized to access this route', 401));
+        }
+
+        // Check if token is blacklisted
+        const isBlacklisted = await isTokenBlacklisted(accessToken);
+        if (isBlacklisted) {
+            return next(createError('authentication', 'Token has been revoked', 401));
+        }
+
+        try {
+            const decoded = jwt.verify(accessToken, process.env.JWT_ACCESS_SECRET);
+
+            const user = await User.findById(decoded.id);
+            if (!user) {
+                return next(createError('authentication', 'No user found with this ID', 404));
+            }
+
+            // Check if user changed password after token was issued
+            if (user.passwordChangedAfter(decoded.iat)) {
+                return next(createError('authentication', 'User recently changed password. Please log in again.', 401));
+            }
+
+            req.user = user;
+            next();
+        } catch (error) {
+            logger.error('Authentication error:', error);
+            return next(createError('authentication', 'Not authorized to access this route', 401));
+        }
     })
 ];
 
