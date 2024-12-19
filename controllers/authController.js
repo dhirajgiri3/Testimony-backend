@@ -8,6 +8,8 @@ import {
   loginWithOTPService,
   verifyLoginOTPService,
   refreshTokens,
+  initiatePasswordReset,
+  resetPassword,
 } from '../services/authService.js';
 import { addToTokenBlacklist } from '../services/tokenBlacklistService.js';
 import { createVerificationEmailTemplate, createPasswordResetEmailTemplate } from '../utils/emailTemplates.js';
@@ -18,6 +20,7 @@ import {
   tokenRefreshRateLimiter,
   otpRequestRateLimiter,
   emailRateLimiter,
+  passwordResetRateLimiter,
 } from '../middlewares/rateLimiter.js';
 import { rotateRefreshToken } from '../services/tokenService.js';
 import { body, validationResult } from 'express-validator';
@@ -37,7 +40,10 @@ export const register = [
   body('firstName').notEmpty().withMessage('First name is required'),
   body('lastName').notEmpty().withMessage('Last name is required'),
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
+  body('password')
+    .isLength({ min: 6 }).withMessage('Password must be at least 6 characters long')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/)
+    .withMessage('Password must include uppercase, lowercase, number, and special character'),
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -200,7 +206,29 @@ export const refreshTokenController = [
       return next(createError('authentication', 'No refresh token provided', 401));
     }
 
-    const { accessToken, refreshToken } = await rotateRefreshToken(oldRefreshToken, res);
+    // Verify and rotate tokens
+    const { accessToken, refreshToken } = await rotateRefreshToken(oldRefreshToken);
+
+    // Blacklist the old refresh token
+    await addToTokenBlacklist(oldRefreshToken);
+
+    // Set new tokens in HttpOnly cookies
+    res.cookie('access_token', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: parseInt(process.env.JWT_ACCESS_EXPIRES_IN, 10) * 1000,
+    });
+
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: parseInt(process.env.JWT_REFRESH_EXPIRES_IN, 10) * 1000,
+    });
+
+    // Log the token rotation event
+    logger.info(`Refresh token rotated for user ${req.user.id}`);
 
     res.status(200).json({
       success: true,
@@ -260,7 +288,13 @@ export const logout = [
     const accessToken = req.cookies.access_token;
     const refreshToken = req.cookies.refresh_token;
 
-    await logoutUser(accessToken, refreshToken, req.user.id);
+    // Blacklist the tokens
+    if (accessToken) {
+      await addToTokenBlacklist(accessToken);
+    }
+    if (refreshToken) {
+      await addToTokenBlacklist(refreshToken);
+    }
 
     // Clear cookies securely
     const cookieOptions = {
@@ -272,6 +306,9 @@ export const logout = [
 
     res.cookie('access_token', '', cookieOptions);
     res.cookie('refresh_token', '', cookieOptions);
+
+    // Log the logout event
+    logger.info(`User ${req.user.id} logged out and tokens blacklisted`);
 
     res.status(200).json({
       success: true,
@@ -357,6 +394,56 @@ export const verifyPhoneOTP = [
         isEmailVerified: user.isEmailVerified,
         isPhoneVerified: user.isPhoneVerified,
       },
+    });
+  }),
+];
+
+/**
+ * @desc    Handle password reset request
+ * @route   POST /api/v1/auth/forgot-password
+ * @access  Public
+ */
+export const forgotPassword = [
+  passwordResetRateLimiter,
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
+    }
+
+    const { email } = req.body;
+
+    await initiatePasswordReset(email);
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset instructions sent to your email.',
+    });
+  }),
+];
+
+/**
+ * @desc    Handle password reset
+ * @route   POST /api/v1/auth/reset-password
+ * @access  Public
+ */
+export const resetPasswordController = [
+  body('token').notEmpty().withMessage('Reset token is required').trim().escape(),
+  body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
+    }
+
+    const { token, newPassword } = req.body;
+
+    await resetPassword(token, newPassword);
+
+    res.status(200).json({
+      success: true,
+      message: 'Password has been reset successfully.',
     });
   }),
 ];

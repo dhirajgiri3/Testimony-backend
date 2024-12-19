@@ -84,9 +84,16 @@ app.use(
 );
 
 // CORS Configuration
+const allowedOrigins = [process.env.CLIENT_URL, 'https://another-allowed-origin.com'];
 app.use(
   cors({
-    origin: process.env.CLIENT_URL,
+    origin: (origin, callback) => {
+      if (allowedOrigins.includes(origin) || !origin) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
   })
 );

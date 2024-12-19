@@ -8,6 +8,11 @@ import UserSetting from "../models/UserSetting.js";
 import crypto from 'crypto';
 import { sendEmail } from "../config/email.js";
 import { validatePasswordStrength } from "../utils/inputValidation.js";
+import rateLimit from 'express-rate-limit';
+import csrf from 'csurf';
+
+// Initialize CSRF protection
+const csrfProtection = csrf({ cookie: true });
 
 /**
  * Get current user
@@ -451,3 +456,4 @@ export const uploadProfilePicture = async (userId, imageBuffer, imageType) => {
   logger.info(`Profile picture updated for user: ${userId}`);
   return imageUrl;
 };
+
