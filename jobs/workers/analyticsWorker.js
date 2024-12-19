@@ -3,8 +3,8 @@
 import { Worker } from "bullmq";
 import { updateAnalytics } from "../../services/analyticsService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
-import queues from "../queues.js";
+import {redis} from "../../config/redis.js";
+import {queues} from "../queues.js";
 
 // Constants for worker configuration
 const WORKER_CONFIG = {

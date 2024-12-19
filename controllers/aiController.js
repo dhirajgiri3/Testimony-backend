@@ -1,5 +1,5 @@
 import asyncHandler from "express-async-handler";
-import queues from "../jobs/queues.js";
+import {queues} from "../jobs/queues.js";
 import AppError from "../utils/appError.js";
 import Analytics from "../models/Analytics.js";
 import { openai } from "../config/openAI.js";

@@ -1,5 +1,4 @@
 import asyncHandler from 'express-async-handler';
-import queues from '../jobs/queues.js';
 import {
   registerUser,
   verifyEmailService,
@@ -12,25 +11,21 @@ import {
 } from '../services/authService.js';
 import { addToTokenBlacklist } from '../services/tokenBlacklistService.js';
 import { createVerificationEmailTemplate, createPasswordResetEmailTemplate } from '../utils/emailTemplates.js';
-import AppError from '../utils/appError.js';
+import { createError } from '../utils/errors.js';
 import {
-  emailVerificationRateLimit,
-  emailResendRateLimit,
-  loginAttemptRateLimit,
-  tokenRefreshRateLimit,
-  otpRequestRateLimit,
-  passwordResetRateLimit,
+  emailVerificationRateLimiter,
+  loginRateLimiter,
+  tokenRefreshRateLimiter,
+  otpRequestRateLimiter,
+  emailRateLimiter,
 } from '../middlewares/rateLimiter.js';
 import { rotateRefreshToken } from '../services/tokenService.js';
-import rateLimit from 'express-rate-limit';
 import { body, validationResult } from 'express-validator';
+import csrf from 'csurf';
+import { queues } from '../jobs/queues.js';
 
-// Rate limiting for auth endpoints
-const authRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // limit each IP to 10 requests per windowMs
-  message: "Too many requests from this IP, please try again later"
-});
+// Initialize CSRF protection
+const csrfProtection = csrf({ cookie: true });
 
 /**
  * @desc    Register a new user
@@ -38,23 +33,18 @@ const authRateLimiter = rateLimit({
  * @access  Public
  */
 export const register = [
-  authRateLimiter,
-  emailVerificationRateLimit,
+  emailVerificationRateLimiter,
   body('firstName').notEmpty().withMessage('First name is required'),
   body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required'),
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
     }
 
     const { firstName, lastName, email, password, phone } = req.body;
-
-    if (!firstName || !lastName || !email || !password) {
-      throw new AppError('Please provide all required fields', 400);
-    }
 
     const { user, verificationToken } = await registerUser({
       firstName,
@@ -87,12 +77,11 @@ export const register = [
  * @access  Public
  */
 export const verifyEmail = [
-  authRateLimiter,
   asyncHandler(async (req, res, next) => {
     const token = req.params.token;
 
     if (!token) {
-      throw new AppError('Verification token is required', 400);
+      return next(createError('validation', 'Verification token is required'));
     }
 
     await verifyEmailService(token);
@@ -110,20 +99,15 @@ export const verifyEmail = [
  * @access  Public
  */
 export const resendVerificationEmail = [
-  authRateLimiter,
-  emailResendRateLimit,
-  body('email').isEmail().withMessage('Valid email is required'),
+  emailRateLimiter,
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
     }
 
     const { email } = req.body;
-
-    if (!email) {
-      throw new AppError('Email is required', 400);
-    }
 
     const { verificationToken } = await resendVerificationEmailService(email);
 
@@ -149,14 +133,14 @@ export const resendVerificationEmail = [
  * @access  Public
  */
 export const login = [
-  authRateLimiter,
-  loginAttemptRateLimit,
-  body('email').isEmail().withMessage('Valid email is required'),
+  loginRateLimiter,
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('password').notEmpty().withMessage('Password is required'),
+  csrfProtection,
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
     }
 
     const { email, password, rememberMe = false } = req.body;
@@ -168,7 +152,7 @@ export const login = [
       req
     );
 
-    // Set tokens in HttpOnly cookies
+    // Set tokens in HttpOnly cookies with Secure and SameSite attributes
     res.cookie('access_token', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -207,18 +191,22 @@ export const login = [
  * @access  Public
  */
 export const refreshTokenController = [
-  authRateLimiter,
-  tokenRefreshRateLimit,
+  tokenRefreshRateLimiter,
+  csrfProtection,
   asyncHandler(async (req, res, next) => {
     const oldRefreshToken = req.cookies.refresh_token;
 
     if (!oldRefreshToken) {
-      throw new AppError('No refresh token provided', 401);
+      return next(createError('authentication', 'No refresh token provided', 401));
     }
 
     const { accessToken, refreshToken } = await rotateRefreshToken(oldRefreshToken, res);
 
-    res.status(200).json({ success: true });
+    res.status(200).json({
+      success: true,
+      accessToken,
+      refreshToken,
+    });
   }),
 ];
 
@@ -228,10 +216,9 @@ export const refreshTokenController = [
  * @access  Public
  */
 export const googleAuthCallback = [
-  authRateLimiter,
   asyncHandler(async (req, res, next) => {
     if (!req.user) {
-      throw new AppError('Authentication failed', 401);
+      return next(createError('authentication', 'Authentication failed', 401));
     }
 
     const user = req.user;
@@ -264,24 +251,18 @@ export const googleAuthCallback = [
  * @access  Private
  */
 export const logout = [
-  authRateLimiter,
+  csrfProtection,
   asyncHandler(async (req, res, next) => {
     if (!req.user?.id) {
-      throw new AppError('Not authenticated', 401);
+      return next(createError('authentication', 'Not authenticated', 401));
     }
 
     const accessToken = req.cookies.access_token;
     const refreshToken = req.cookies.refresh_token;
 
-    if (accessToken) {
-      await addToTokenBlacklist(accessToken, "access");
-    }
+    await logoutUser(accessToken, refreshToken, req.user.id);
 
-    if (refreshToken) {
-      await addToTokenBlacklist(refreshToken, "refresh");
-    }
-
-    // Clear cookies
+    // Clear cookies securely
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -289,8 +270,8 @@ export const logout = [
       expires: new Date(0),
     };
 
-    res.cookie('access_token', 'none', cookieOptions);
-    res.cookie('refresh_token', 'none', cookieOptions);
+    res.cookie('access_token', '', cookieOptions);
+    res.cookie('refresh_token', '', cookieOptions);
 
     res.status(200).json({
       success: true,
@@ -305,20 +286,15 @@ export const logout = [
  * @access  Public
  */
 export const sendPhoneOTP = [
-  authRateLimiter,
-  otpRequestRateLimit,
-  body('phone').notEmpty().withMessage('Phone number is required'),
+  otpRequestRateLimiter,
+  body('phone').notEmpty().withMessage('Phone number is required').trim().escape(),
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
     }
 
     const { phone } = req.body;
-
-    if (!phone) {
-      throw new AppError('Phone number is required', 400);
-    }
 
     await loginWithOTPService(phone, req); // Pass req to capture metadata
 
@@ -335,20 +311,16 @@ export const sendPhoneOTP = [
  * @access  Public
  */
 export const verifyPhoneOTP = [
-  authRateLimiter,
-  body('phone').notEmpty().withMessage('Phone number is required'),
-  body('code').notEmpty().withMessage('OTP code is required'),
+  body('phone').notEmpty().withMessage('Phone number is required').trim().escape(),
+  body('code').notEmpty().withMessage('OTP code is required').trim().escape(),
+  csrfProtection,
   asyncHandler(async (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return next(createError('validation', 'Invalid input', { errors: errors.array() }));
     }
 
     const { phone, code } = req.body;
-
-    if (!phone || !code) {
-      throw new AppError('Phone and OTP code are required', 400);
-    }
 
     const { accessToken, refreshToken, user } = await verifyLoginOTPService(
       phone,

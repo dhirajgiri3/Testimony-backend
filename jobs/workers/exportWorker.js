@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { exportUserData } from "../../services/userService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
+import {redis} from "../../config/redis.js";
 import { sendDataToUrl } from "../../utils/dataSender.js";
 
 const exportWorker = new Worker(

@@ -23,7 +23,7 @@ const router = express.Router();
 // Registration route
 router.post(
   "/register",
-  register // Rate limiting is handled within the controller
+  register // Rate limiting and validation handled within the controller
 );
 
 // Email verification route
@@ -32,7 +32,7 @@ router.get("/verify-email/:token", verifyEmail);
 // Login route
 router.post(
   "/login",
-  login // Rate limiting is handled within the controller
+  login // Rate limiting and validation handled within the controller
 );
 
 // Refresh token route

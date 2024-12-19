@@ -5,7 +5,7 @@ import Testimonial from "../models/Testimonial.js";
 import Goal from "../models/Goal.js";
 import User from "../models/User.js";
 import ActivityLog from "../models/ActivityLog.js"; // Added missing import
-import queues from "../jobs/queues.js";
+import {queues} from "../jobs/queues.js";
 import { logger } from "../utils/logger.js";
 import { performSentimentAnalysis } from "./sentimentService.js";
 import { extractSkills } from "./skillExtractionService.js";

@@ -19,8 +19,8 @@ import { protect } from '../../../middlewares/auth.js';
 import { validateRequest } from '../../../middlewares/validate.js';
 import { sanitizeBody } from '../../../middlewares/sanitize.js';
 import {
-  profileUpdateRateLimit,
-  emailVerificationRateLimit,
+  profileUpdateRateLimiter,
+  emailVerificationRateLimiter,
 } from '../../../middlewares/rateLimiter.js';
 import { cache } from '../../../middlewares/cache.js';
 import { upload } from '../../../middlewares/upload.js'; // Middleware for file uploads
@@ -40,7 +40,7 @@ router.get('/profile', protect, cache(300), getUserProfile);
 router.put(
   '/profile',
   protect,
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   sanitizeBody,
   createValidator(updateProfileValidation.basicInfo),
   validateRequest,
@@ -51,7 +51,7 @@ router.put(
 router.put(
   '/preferences',
   protect,
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   sanitizeBody,
   createValidator(updatePreferencesValidation), // Ensure this is a middleware function
   validateRequest,
@@ -62,7 +62,7 @@ router.put(
 router.put(
   '/settings',
   protect,
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   sanitizeBody,
   createValidator(updateSettingsValidation), // Ensure this is a middleware function
   validateRequest,
@@ -73,7 +73,7 @@ router.put(
 router.delete(
   '/account',
   protect,
-  emailVerificationRateLimit,
+  emailVerificationRateLimiter,
   deleteAccount
 );
 

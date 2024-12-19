@@ -8,7 +8,7 @@ import {
 } from '../../../controllers/aiController.js';
 import { protect } from '../../../middlewares/auth.js';
 import { authorize } from '../../../middlewares/role.js';
-import { profileUpdateRateLimit } from '../../../middlewares/rateLimiter.js';
+import { profileUpdateRateLimiter } from '../../../middlewares/rateLimiter.js';
 import { chatValidation, createValidator } from '../../../utils/validators.js';
 import { validateRequest } from '../../../middlewares/validate.js';
 
@@ -19,7 +19,7 @@ router.post(
   '/generate-testimonial',
   protect,
   authorize('seeker'),
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   generateAITestimonialSuggestion
 );
 
@@ -42,7 +42,7 @@ router.get(
   '/insights/:seekerId',
   protect,
   authorize('seeker'),
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   getAdvancedInsights
 );
 

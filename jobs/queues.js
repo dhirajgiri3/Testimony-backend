@@ -1,7 +1,7 @@
 // src/jobs/queues.js
 
 import { Queue, QueueEvents } from "bullmq";
-import redis from "../config/redis.js";
+import {redis} from "../config/redis.js"; // Use the singleton Redis client
 import { logger } from "../utils/logger.js";
 
 const defaultBullMQOptions = {
@@ -17,7 +17,7 @@ const defaultBullMQOptions = {
   },
 };
 
-// Reuse the same Redis connection for all queues
+// Initialize Queues
 const queues = {
   emailQueue: new Queue("emailQueue", defaultBullMQOptions),
   testimonialQueue: new Queue("testimonialQueue", defaultBullMQOptions),
@@ -66,4 +66,4 @@ Object.keys(queues).forEach((queueName) => {
   }
 });
 
-export default queues;
+export { queues, queueEvents };

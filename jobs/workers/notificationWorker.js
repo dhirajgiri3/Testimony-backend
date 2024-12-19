@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { sendInAppNotification } from "../../services/notificationService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
+import {redis} from "../../config/redis.js";
 
 const notificationWorker = new Worker(
   "notificationQueue",

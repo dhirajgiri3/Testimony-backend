@@ -1,5 +1,5 @@
 import { openai } from '../config/openAI.js';
-import redis from '../config/redis.js';
+import {redis} from '../config/redis.js';
 import { logger } from '../utils/logger.js';
 import AppError from '../utils/appError.js';
 import { cacheManager } from '../middlewares/cache.js';
@@ -46,6 +46,29 @@ const AI_CONFIG = {
     RATE_LIMIT: 'AI request rate limit exceeded',
     TIMEOUT: 'AI operation timed out',
     PROCESSING: 'Error processing AI request'
+  }
+};
+
+// Add new configuration section for testimonial generation
+const TESTIMONIAL_CONFIG = {
+  TONES: {
+    PROFESSIONAL: 'professional',
+    CASUAL: 'casual',
+    ENTHUSIASTIC: 'enthusiastic',
+    BALANCED: 'balanced'
+  },
+  LENGTHS: {
+    SHORT: { min: 50, max: 150 },
+    MEDIUM: { min: 150, max: 300 },
+    LONG: { min: 300, max: 500 }
+  },
+  FOCUS_AREAS: {
+    SKILLS: 'skills',
+    IMPACT: 'impact',
+    COLLABORATION: 'collaboration',
+    LEADERSHIP: 'leadership',
+    TECHNICAL: 'technical',
+    SOFT_SKILLS: 'soft_skills'
   }
 };
 
@@ -605,6 +628,428 @@ export const detectContentIssues = async (testimonialText, options = {}) => {
   }
 };
 
+export const generateTestimonialSuggestions = async (testimonialText) => {
+  const cacheKey = cacheManager.generateKey('suggestions', testimonialText);
+  const cached = await cacheManager.get(cacheKey);
+  if (cached) return cached;
+
+  const messages = [
+    {
+      role: "system",
+      content: `Generate advanced testimonial improvements:
+        - Style and tone enhancement
+        - Structural improvements
+        - Content gap analysis
+        - Professional language suggestions
+        - Impact statement recommendations
+        - Industry-specific enhancements
+        Return as detailed JSON object.`
+    },
+    {
+      role: "user",
+      content: `Enhance testimonial: "${testimonialText}"`
+    }
+  ];
+
+  try {
+    const result = await createEnhancedCompletion(messages, { temperature: 0.6 });
+    await cacheManager.set(cacheKey, JSON.parse(result));
+    return JSON.parse(result);
+  } catch (error) {
+    logger.error('Suggestion generation failed:', error);
+    return {};
+  }
+}
+
+/**
+ * Generate AI-powered testimonial with advanced customization
+ * @param {Object} options - Configuration options for testimonial generation
+ * @returns {Promise<Object>} Generated testimonial and metadata
+ */
+export const generateAITestimonial = async (options = {}) => {
+  const {
+    projectDetails,
+    seekerProfile,
+    giverProfile,
+    tone = TESTIMONIAL_CONFIG.TONES.PROFESSIONAL,
+    length = TESTIMONIAL_CONFIG.LENGTHS.MEDIUM,
+    focusAreas = [TESTIMONIAL_CONFIG.FOCUS_AREAS.SKILLS, TESTIMONIAL_CONFIG.FOCUS_AREAS.IMPACT],
+    industry,
+    relationship,
+    duration,
+    achievements = [],
+    keywords = [],
+    style = {},
+    userId
+  } = options;
+
+  // Validate inputs
+  if (!projectDetails || !seekerProfile) {
+    throw createError('validation', 'Project details and seeker profile are required');
+  }
+
+  // Generate cache key based on input parameters
+  const cacheKey = cacheManager.generateKey('testimonial_gen', {
+    projectDetails,
+    seekerProfile,
+    tone,
+    length,
+    focusAreas,
+    industry
+  });
+
+  try {
+    return await cacheManager.getOrCompute(
+      cacheKey,
+      async () => {
+        // Construct context-aware prompt
+        const contextPrompt = constructTestimonialPrompt({
+          projectDetails,
+          seekerProfile,
+          giverProfile,
+          tone,
+          length,
+          focusAreas,
+          industry,
+          relationship,
+          duration,
+          achievements,
+          keywords,
+          style
+        });
+
+        const messages = [
+          {
+            role: "system",
+            content: `You are an expert testimonial writer with deep understanding of ${industry || 'various industries'}. 
+                     Generate authentic, impactful testimonials that highlight real value and specific contributions.`
+          },
+          {
+            role: "user",
+            content: contextPrompt
+          }
+        ];
+
+        // Generate initial testimonial
+        const rawTestimonial = await createEnhancedCompletion(messages, {
+          temperature: 0.7,
+          maxTokens: length.max * 2,
+          userId,
+          context: { operation: 'generateTestimonial' }
+        });
+
+        // Parse and enhance the generated testimonial
+        const enhancedTestimonial = await enhanceTestimonialContent(rawTestimonial, {
+          tone,
+          focusAreas,
+          industry,
+          keywords
+        });
+
+        // Analyze sentiment and authenticity
+        const [sentiment, authenticity] = await Promise.all([
+          analyzeDetailedSentiment(enhancedTestimonial.content),
+          analyzeTestimonialAuthenticity(enhancedTestimonial.content)
+        ]);
+
+        // Generate alternative versions with different tones
+        const alternatives = await generateAlternativeVersions(enhancedTestimonial.content, {
+          tones: [TESTIMONIAL_CONFIG.TONES.CASUAL, TESTIMONIAL_CONFIG.TONES.ENTHUSIASTIC],
+          length
+        });
+
+        // Compile final response
+        const result = {
+          original: enhancedTestimonial.content,
+          enhanced: enhancedTestimonial.enhanced,
+          alternatives,
+          metadata: {
+            sentiment,
+            authenticity,
+            stats: {
+              wordCount: enhancedTestimonial.content.split(/\s+/).length,
+              readabilityScore: calculateReadabilityScore(enhancedTestimonial.content),
+              impactScore: calculateImpactScore(enhancedTestimonial)
+            },
+            keywords: extractKeyPhrases(enhancedTestimonial.content),
+            focusAreas: analyzeContentFocus(enhancedTestimonial.content, focusAreas),
+            suggestions: enhancedTestimonial.suggestions
+          },
+          generated: new Date().toISOString()
+        };
+
+        // Track metrics
+        metrics.timing('ai.testimonial.generation', Date.now(), {
+          industry,
+          tone,
+          length: Object.keys(TESTIMONIAL_CONFIG.LENGTHS).find(key => 
+            TESTIMONIAL_CONFIG.LENGTHS[key] === length
+          )
+        });
+
+        return result;
+      },
+      AI_CONFIG.CACHE.TTL
+    );
+  } catch (error) {
+    logger.error('Testimonial generation failed:', error);
+    metrics.increment('ai.testimonial.generation.error');
+    throw createError('processing', 'Failed to generate testimonial', {
+      cause: error,
+      details: { userId, industry }
+    });
+  }
+};
+
+/**
+ * Helper function to construct detailed prompt for testimonial generation
+ */
+const constructTestimonialPrompt = (params) => {
+  const {
+    projectDetails,
+    seekerProfile,
+    giverProfile,
+    tone,
+    length,
+    focusAreas,
+    industry,
+    relationship,
+    duration,
+    achievements,
+    keywords,
+    style
+  } = params;
+
+  return `
+    Context:
+    - Industry: ${industry || 'Not specified'}
+    - Relationship: ${relationship || 'Professional collaboration'}
+    - Duration: ${duration || 'Project-based'}
+    - Professional Context: ${projectDetails}
+
+    Profile Information:
+    - Seeker Background: ${seekerProfile}
+    ${giverProfile ? `- Giver Perspective: ${giverProfile}` : ''}
+
+    Key Achievements:
+    ${achievements.map(achievement => `- ${achievement}`).join('\n')}
+
+    Requirements:
+    - Tone: ${tone}
+    - Length: ${length.min}-${length.max} words
+    - Focus Areas: ${focusAreas.join(', ')}
+    ${keywords.length ? `- Key Terms: ${keywords.join(', ')}` : ''}
+    ${style.emphasis ? `- Emphasis: ${style.emphasis}` : ''}
+
+    Generate a testimonial that:
+    1. Demonstrates authentic experience and specific value
+    2. Includes concrete examples and measurable impacts
+    3. Maintains professional credibility while being engaging
+    4. Balances technical expertise with soft skills
+    5. Follows industry-standard terminology
+    6. Creates a compelling narrative arc
+  `;
+};
+
+/**
+ * Helper function to enhance testimonial content
+ */
+const enhanceTestimonialContent = async (content, options) => {
+  const { tone, focusAreas, industry, keywords } = options;
+
+  try {
+    const messages = [
+      {
+        role: "system",
+        content: `Enhance this testimonial while maintaining authenticity:
+          - Adjust tone to be ${tone}
+          - Focus on these areas: ${focusAreas.join(', ')}
+          - Use appropriate ${industry || 'professional'} terminology
+          - Incorporate relevant keywords: ${keywords.join(', ')}
+          Return a JSON object with enhanced content and suggestions.`
+      },
+      {
+        role: "user",
+        content: `Enhance: "${content}"`
+      }
+    ];
+
+    const result = await createEnhancedCompletion(messages, {
+      temperature: 0.6,
+      maxTokens: 500,
+      context: { operation: 'enhanceContent' }
+    });
+
+    const enhanced = JSON.parse(result);
+    
+    return {
+      content: content,
+      enhanced: enhanced.content,
+      suggestions: enhanced.suggestions,
+      improvements: enhanced.improvements
+    };
+  } catch (error) {
+    logger.error('Content enhancement failed:', error);
+    return { content, enhanced: content, suggestions: [], improvements: [] };
+  }
+};
+
+/**
+ * Helper function to analyze testimonial authenticity
+ */
+const analyzeTestimonialAuthenticity = async (content) => {
+  try {
+    const messages = [
+      {
+        role: "system",
+        content: `Analyze testimonial authenticity based on:
+          - Language naturality
+          - Specific details presence
+          - Personal voice consistency
+          - Credibility markers
+          - Emotional resonance
+          Return a detailed JSON analysis with scores and explanations.`
+      },
+      {
+        role: "user",
+        content: `Analyze authenticity: "${content}"`
+      }
+    ];
+
+    const result = await createEnhancedCompletion(messages, {
+      temperature: 0.3,
+      maxTokens: 300,
+      context: { operation: 'analyzeAuthenticity' }
+    });
+
+    const analysis = JSON.parse(result);
+    
+    return {
+      score: analysis.overall_score,
+      aspects: analysis.aspect_scores,
+      markers: analysis.authenticity_markers,
+      suggestions: analysis.improvement_suggestions
+    };
+  } catch (error) {
+    logger.error('Authenticity analysis failed:', error);
+    return { score: 0.5, aspects: {}, markers: [], suggestions: [] };
+  }
+};
+
+/**
+ * Helper function to generate alternative versions
+ */
+const generateAlternativeVersions = async (content, options) => {
+  const { tones, length } = options;
+
+  try {
+    const alternatives = await Promise.all(
+      tones.map(async tone => {
+        const messages = [
+          {
+            role: "system",
+            content: `Rewrite this testimonial in a ${tone} tone while:
+              - Maintaining core message and facts
+              - Adjusting language and style
+              - Keeping length between ${length.min}-${length.max} words
+              - Preserving professional credibility
+              Return the rewritten version with tone markers.`
+          },
+          {
+            role: "user",
+            content: `Rewrite: "${content}"`
+          }
+        ];
+
+        const result = await createEnhancedCompletion(messages, {
+          temperature: 0.7,
+          maxTokens: length.max * 2,
+          context: { operation: 'generateAlternative' }
+        });
+
+        return {
+          tone,
+          content: result,
+          wordCount: result.split(/\s+/).length,
+          timestamp: new Date().toISOString()
+        };
+      })
+    );
+
+    return alternatives.filter(alt => 
+      alt.wordCount >= length.min && 
+      alt.wordCount <= length.max
+    );
+  } catch (error) {
+    logger.error('Alternative generation failed:', error);
+    return [];
+  }
+};
+
+/**
+ * Helper function to calculate readability score
+ */
+const calculateReadabilityScore = (text) => {
+  const words = text.split(/\s+/).length;
+  const sentences = text.split(/[.!?]+/).length;
+  const syllables = countSyllables(text);
+  
+  // Flesch-Kincaid Grade Level
+  const score = 0.39 * (words / sentences) + 11.8 * (syllables / words) - 15.59;
+  
+  return Math.max(0, Math.min(100, Math.round(100 - score)));
+};
+
+/**
+ * Helper function to calculate impact score
+ */
+const calculateImpactScore = (testimonial) => {
+  const impactFactors = {
+    specificity: hasSpecificDetails(testimonial.content),
+    metrics: hasQuantitativeMetrics(testimonial.content),
+    clarity: testimonial.stats.readabilityScore / 100,
+    sentiment: testimonial.metadata.sentiment.score,
+    authenticity: testimonial.metadata.authenticity.score
+  };
+
+  return Object.values(impactFactors).reduce((acc, val) => acc + val, 0) / 
+         Object.keys(impactFactors).length;
+};
+
+/**
+ * Helper function to extract key phrases
+ */
+const extractKeyPhrases = (text) => {
+  // Simple implementation - can be enhanced with NLP libraries
+  const words = text.toLowerCase().split(/\W+/);
+  const phrases = [];
+  
+  for (let i = 0; i < words.length - 1; i++) {
+    if (words[i].length > 3 && words[i + 1].length > 3) {
+      phrases.push(`${words[i]} ${words[i + 1]}`);
+    }
+  }
+  
+  return [...new Set(phrases)];
+};
+
+/**
+ * Helper function to analyze content focus
+ */
+const analyzeContentFocus = (content, targetAreas) => {
+  const analysis = {};
+  
+  for (const area of targetAreas) {
+    analysis[area] = {
+      coverage: calculateAreaCoverage(content, area),
+      keywords: extractAreaKeywords(content, area),
+      suggestions: generateAreaSuggestions(content, area)
+    };
+  }
+  
+  return analysis;
+};
+
 // Export enhanced service
 export default {
   extractSkills,
@@ -615,5 +1060,18 @@ export default {
   batchProcessTestimonials,
   generateTestimonialImprovements,
   detectContentIssues,
-  AI_CONFIG
+  generateTestimonialSuggestions,
+  generateAITestimonial,
+  enhanceTestimonialContent,
+  analyzeTestimonialAuthenticity, 
+  generateAlternativeVersions,
+  calculateReadabilityScore,
+  calculateImpactScore,
+  extractKeyPhrases,
+  analyzeContentFocus,
+  constructTestimonialPrompt,
+  TESTIMONIAL_CONFIG,
+  AI_CONFIG,
+  AIRateLimiter,
+  CircuitBreaker
 };

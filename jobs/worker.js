@@ -1,15 +1,19 @@
 // src/jobs/worker.js
 
+import { Worker } from "bullmq";
+import {queues} from "./queues.js"; // Import initialized queues
+import { logger } from "../utils/logger.js";
+
+// Import individual worker processors
 import emailWorker from "./workers/emailWorker.js";
 import testimonialWorker from "./workers/testimonialWorker.js";
 import aiWorker from "./workers/aiWorker.js";
 import analyticsWorker from "./workers/analyticsWorker.js";
 import exportWorker from "./workers/exportWorker.js";
 import notificationWorker from "./workers/notificationWorker.js";
-import { logger } from "../utils/logger.js";
 
-// Array of all workers
-const workers = [
+// Array of all worker instances
+const workerInstances = [
   emailWorker,
   testimonialWorker,
   aiWorker,
@@ -24,7 +28,7 @@ const workers = [
 const shutdownWorkers = async () => {
   logger.info("🛑 Shutting down all BullMQ workers...");
   try {
-    await Promise.all(workers.map((worker) => worker.close()));
+    await Promise.all(workerInstances.map((worker) => worker.close()));
     logger.info("✅ All workers shut down successfully.");
     process.exit(0);
   } catch (error) {
@@ -38,7 +42,7 @@ process.on("SIGTERM", shutdownWorkers);
 process.on("SIGINT", shutdownWorkers);
 
 // Handle unexpected errors
-workers.forEach((worker) => {
+workerInstances.forEach((worker) => {
   worker.on("error", (error) => {
     logger.error(`❌ Worker ${worker.name} encountered an error:`, error);
   });
@@ -47,4 +51,4 @@ workers.forEach((worker) => {
   });
 });
 
-export { workers, shutdownWorkers };
+export { workerInstances, shutdownWorkers };

@@ -15,12 +15,12 @@ import AppError from './utils/appError.js';
 import { v4 as uuidv4 } from 'uuid';
 import './config/passport.js'; // Passport configuration
 import session from 'express-session';
-import { emailVerificationRateLimit, emailResendRateLimit, profileUpdateRateLimit, tokenRefreshRateLimit, loginAttemptRateLimit, otpRequestRateLimit, passwordResetRateLimit } from './middlewares/rateLimiter.js'; // Import rate limit middleware
+import { emailVerificationRateLimiter, emailResendRateLimiter, profileUpdateRateLimiter, tokenRefreshRateLimiter, loginAttemptRateLimiter, otpRequestRateLimiter, passwordResetRateLimiter } from './middlewares/rateLimiter.js'; // Import rate limit middleware
 import { requestLogger } from './middlewares/logger.js';
 import rateLimit from 'express-rate-limit';
 import mongoSanitize from 'express-mongo-sanitize';
+import csrfProtection, { handleCsrfError } from './middlewares/csrf.js'; // Import CSRF protection middleware
 
-// Load environment variables
 dotenv.config();
 
 // Validate required environment variables
@@ -38,14 +38,16 @@ const requiredEnvVars = [
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
 ];
-requiredEnvVars.forEach((envVar) => {
-  if (!process.env[envVar]) {
-    logger.error(`FATAL ERROR: ${envVar} is not defined.`);
-    process.exit(1);
-  }
-});
 
-// Initialize Express app
+const validateEnvVars = () => {
+  requiredEnvVars.forEach((envVar) => {
+    if (!process.env[envVar]) {
+      logger.error(`FATAL ERROR: ${envVar} is not defined.`);
+      process.exit(1);
+    }
+  });
+};
+
 const app = express();
 
 // Assign a unique request ID for every incoming request
@@ -101,13 +103,13 @@ app.use(cookieParser()); // Parse cookies
 app.use(compression()); // Compress responses with Gzip & Brotli
 
 // Rate Limiting for API requests
-app.use('/api/v1/email/verify', emailVerificationRateLimit);
-app.use('/api/v1/email/resend', emailResendRateLimit);
-app.use('/api/v1/profile/update', profileUpdateRateLimit);
-app.use('/api/v1/token/refresh', tokenRefreshRateLimit);
-app.use('/api/v1/login', loginAttemptRateLimit);
-app.use('/api/v1/otp/request', otpRequestRateLimit);
-app.use('/api/v1/password/reset', passwordResetRateLimit);
+app.use('/api/v1/email/verify', emailVerificationRateLimiter);
+app.use('/api/v1/email/resend', emailResendRateLimiter);
+app.use('/api/v1/profile/update', profileUpdateRateLimiter);
+app.use('/api/v1/token/refresh', tokenRefreshRateLimiter);
+app.use('/api/v1/login', loginAttemptRateLimiter); // Changed from loginAttemptRateLimit
+app.use('/api/v1/otp/request', otpRequestRateLimiter);
+app.use('/api/v1/password/reset', passwordResetRateLimiter);
 
 // General Rate Limiting
 const generalRateLimiter = rateLimit({
@@ -157,6 +159,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// Apply CSRF protection to all POST, PUT, DELETE routes
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+    csrfProtection(req, res, next);
+  } else {
+    next();
+  }
+});
+
 // API Routes
 app.use('/api/v1', apiRoutes);
 
@@ -165,7 +176,10 @@ app.all('*', (req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
 
+// CSRF error handler
+app.use(handleCsrfError);
+
 // Error Handling Middleware
 app.use(errorHandler);
 
-export default app;
+export { app, validateEnvVars };

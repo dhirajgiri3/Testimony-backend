@@ -1,121 +1,76 @@
-// /backend/server.js
+// src/server.js
 
-// Suppress "Eviction policy" warnings
+import { createServer } from 'http';
+import { app, validateEnvVars } from './app.js';
+import { connectDB } from './config/db.js';
+import { redis } from './config/redis.js';
+import { logger } from './utils/logger.js';
+import './jobs/worker.js';
+
+// Suppress Redis warning
 const originalWarn = console.warn;
 console.warn = function (...args) {
-  if (
-    args.some(
-      (arg) => typeof arg === "string" && arg.includes("Eviction policy")
-    )
-  ) {
-    return; // Suppress only this warning
+  if (args.some((arg) => typeof arg === "string" && arg.includes("Eviction policy"))) {
+    return;
   }
   originalWarn.apply(console, args);
 };
 
-import express from "express";
-import dotenv from "dotenv";
-import cors from "cors";
-import helmet from "helmet";
-import hpp from "hpp";
-import xss from "xss-clean";
-import cookieParser from "cookie-parser";
-import passport from "passport";
-import morgan from "morgan";
-import { connectDB } from "./config/db.js";
-import apiRoutes from "./routes/api/v1/index.js";
-import { logger } from "./utils/logger.js";
-import "./jobs/worker.js";
+const server = createServer(app);
 
-dotenv.config();
+// Graceful shutdown handler
+const gracefulShutdown = async (signal) => {
+  logger.info(`${signal} received. Starting graceful shutdown...`);
 
-// Initialize Express app
-const app = express();
+  const shutdownTimeout = setTimeout(() => {
+    logger.error('Forced shutdown due to timeout');
+    process.exit(1);
+  }, 30000);
 
-// Connect to Database
-connectDB()
-  .then(() => {
-    logger.info("✅ Connected to MongoDB");
-  })
-  .catch((error) => {
-    logger.error("❌ Database connection error:", error);
-    process.exit(1); // Exit if DB connection fails
-  });
-
-// Middleware
-app.use(helmet()); // Set security HTTP headers
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL,
-    credentials: true,
-  })
-);
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
-app.use(xss()); // Sanitize user input
-app.use(hpp()); // Prevent HTTP Parameter Pollution
-app.use(cookieParser()); // Parse cookies
-
-// Logging
-if (process.env.NODE_ENV === "development") {
-  app.use(morgan("dev"));
-} else {
-  app.use(
-    morgan("combined", {
-      stream: {
-        write: (message) => logger.info(message.trim()),
-      },
-    })
-  );
-}
-
-// CSRF Protection for mutation requests
-app.use((req, res, next) => {
-  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
-    csrfProtection(req, res, next);
-  } else {
-    next();
+  try {
+    server.close(() => logger.info('HTTP server closed'));
+    await redis.quit();
+    await mongoose.connection.close();
+    
+    clearTimeout(shutdownTimeout);
+    logger.info('Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during graceful shutdown:', error);
+    process.exit(1);
   }
+};
+
+// Process handlers
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  gracefulShutdown('Unhandled Rejection');
 });
 
-// Initialize Passport
-app.use(passport.initialize());
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error);
+  gracefulShutdown('Uncaught Exception');
+});
 
-// Routes
-app.use(
-  "/api/v1",
-  (req, res, next) => {
-    logger.info(`Incoming request: ${req.method} ${req.url}`, {
-      headers: req.headers,
-      body: req.body,
-      query: req.query,
+['SIGTERM', 'SIGINT'].forEach(signal => {
+  process.on(signal, () => gracefulShutdown(signal));
+});
+
+// Start server
+const PORT = process.env.PORT || 5000;
+
+const startServer = async () => {
+  try {
+    validateEnvVars();
+    await connectDB();
+    
+    server.listen(PORT, () => {
+      logger.info(`✅ Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
     });
-    next();
-  },
-  apiRoutes
-);
+  } catch (error) {
+    logger.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+};
 
-// Error handling for CSRF
-app.use((err, req, res, next) => {
-  if (err.code !== 'EBADCSRFTOKEN') return next(err);
-
-
-  // Handle CSRF token errors here
-  res.status(403).json({
-    success: false,
-    message: 'Form tampered with',
-  });
-});
-
-// Error Handler Middleware
-app.use((err, _req, res, _next) => {
-  logger.error("Unhandled error:", {
-    message: err.message,
-    stack: err.stack,
-    status: err.status || 500,
-  });
-  res.status(err.statusCode || 500).json({
-    success: false,
-    message: err.message || 'Server Error',
-  });
-});
+startServer();

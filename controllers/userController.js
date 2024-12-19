@@ -22,8 +22,8 @@ import {
 import { logger } from "../utils/logger.js";
 import AppError from "../utils/appError.js";
 import {
-  profileUpdateRateLimit,
-  emailVerificationRateLimit,
+  profileUpdateRateLimiter,
+  emailVerificationRateLimiter,
 } from "../middlewares/rateLimiter.js";
 import { cache } from "../middlewares/cache.js";
 
@@ -69,7 +69,7 @@ export const getUserProfile = [
  * @access  Private
  */
 export const updateProfile = [
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   asyncHandler(async (req, res, next) => {
     const validationErrors = validateUpdateData(req.body);
     if (validationErrors.length > 0) {
@@ -92,7 +92,7 @@ export const updateProfile = [
  * @access  Private
  */
 export const updatePreferences = [
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   asyncHandler(async (req, res, next) => {
     const preferences = await updateUserPreferences(req.user.id, req.body);
 
@@ -110,7 +110,7 @@ export const updatePreferences = [
  * @access  Private
  */
 export const updateSettings = [
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   asyncHandler(async (req, res, next) => {
     const settings = await updateUserSettings(req.user.id, req.body);
 
@@ -128,7 +128,7 @@ export const updateSettings = [
  * @access  Private
  */
 export const deleteAccount = [
-  emailVerificationRateLimit,
+  emailVerificationRateLimiter,
   asyncHandler(async (req, res, next) => {
     await deleteUserAccount(req.user.id);
 
@@ -145,7 +145,7 @@ export const deleteAccount = [
  * @access  Private
  */
 export const exportData = [
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   asyncHandler(async (req, res, next) => {
     const data = await exportUserData(req.user.id);
 
@@ -243,7 +243,7 @@ export const disable2FA = [
  * @access  Private
  */
 export const uploadProfilePic = [
-  profileUpdateRateLimit,
+  profileUpdateRateLimiter,
   asyncHandler(async (req, res, next) => {
     if (!req.file) {
       throw new AppError("No file uploaded", 400);

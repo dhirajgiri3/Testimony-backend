@@ -4,7 +4,7 @@ import { openai } from "../config/openAI.js";
 import { logger } from "../utils/logger.js";
 import AppError from "../utils/appError.js";
 import { promisify } from "util";
-import redisClient from "../config/redis.js";
+import {redis} from "../config/redis.js";
 import crypto from "crypto";
 
 // Function to hash text
@@ -15,7 +15,7 @@ const hashText = (text) => {
 // Function to get cached sentiment
 const getCachedSentiment = async (text) => {
   const cacheKey = `sentiment:${hashText(text)}`;
-  const cached = await redisClient.get(cacheKey);
+  const cached = await redis.get(cacheKey);
   if (cached) {
     return JSON.parse(cached);
   }
@@ -25,7 +25,7 @@ const getCachedSentiment = async (text) => {
 // Function to set cached sentiment
 const setCachedSentiment = async (text, sentiment) => {
   const cacheKey = `sentiment:${hashText(text)}`;
-  await redisClient.set(cacheKey, JSON.stringify(sentiment), "EX", 3600); // Cache for 1 hour
+  await redis.set(cacheKey, JSON.stringify(sentiment), "EX", 3600); // Cache for 1 hour
 };
 
 // Retry mechanism

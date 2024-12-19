@@ -1,8 +1,8 @@
 import { Worker } from "bullmq";
 import { generateAITestimonial } from "../../services/aiService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
-import queues from "../queues.js";
+import {redis} from "../../config/redis.js";
+import {queues} from "../queues.js";
 
 // Worker configuration constants
 const WORKER_CONFIG = {

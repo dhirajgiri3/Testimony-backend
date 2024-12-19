@@ -5,7 +5,7 @@ import {
   sendPasswordResetEmail,
 } from "../../services/emailService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
+import { redis } from "../../config/redis.js";
 
 const emailWorker = new Worker(
   "emailQueue",

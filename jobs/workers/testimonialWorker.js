@@ -1,7 +1,7 @@
 // src/jobs/workers/testimonialWorker.js
 
 import { Worker } from "bullmq";
-import queues from "../queues.js";
+import {queues} from "../queues.js";
 import { 
   processTestimonialSubmission, 
   approveTestimonial, 
@@ -12,7 +12,7 @@ import {
   restoreTestimonial 
 } from "../../services/testimonialService.js";
 import { logger } from "../../utils/logger.js";
-import redis from "../../config/redis.js";
+import {redis} from "../../config/redis.js";
 
 const testimonialWorker = new Worker(
   "testimonialQueue",

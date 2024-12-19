@@ -3,11 +3,11 @@
 import mongoose from 'mongoose';
 import Testimonial from "../models/Testimonial.js";
 import User from "../models/User.js";
-import queues from "../jobs/queues.js";
+import {queues} from "../jobs/queues.js";
 import AppError from "../utils/appError.js";
 import { logger } from "../utils/logger.js";
 import { nanoid } from "nanoid";
-import redis from '../config/redis.js';
+import {redis} from '../config/redis.js';
 import { sanitizeInput } from '../utils/validation.js';
 import { 
   extractSkills, 
@@ -17,7 +17,6 @@ import {
   generateTestimonialSuggestions
 } from "./aiService.js";
 import { sendEmail } from '../config/email.js';
-import { rateLimitTestimonials } from '../middlewares/rateLimiter.js';
 import metrics from '../utils/metrics.js';
 
 // Enhanced Redis caching wrapper

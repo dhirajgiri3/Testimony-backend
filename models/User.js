@@ -51,6 +51,10 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isPhoneVerified: {
+      type: Boolean,
+      default: false,
+    },
     emailVerificationToken: String,
     emailVerificationTokenExpiry: Date,
     resetPasswordToken: String,
@@ -83,6 +87,8 @@ const userSchema = new mongoose.Schema(
       code: String,
       expiresAt: Date,
     },
+    userAgent: String,
+    ipAddress: String,
     createdAt: {
       type: Date,
       default: Date.now,

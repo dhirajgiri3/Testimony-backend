@@ -36,11 +36,11 @@ import {
   createValidator,
 } from "../../../utils/validators.js";
 import { validateRequest } from "../../../middlewares/validate.js";
-import { rateLimitTestimonials } from "../../../middlewares/rateLimiter.js";
 import {
   validateGetTestimonials,
   validateBulkAction,
 } from "../../../middlewares/validators/testimonialValidator.js";
+import { rateLimitTestimonials } from "../../../middlewares/rateLimiter.js";
 
 const router = express.Router();
 
