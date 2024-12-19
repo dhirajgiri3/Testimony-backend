@@ -1,3 +1,5 @@
+// src/models/Testimonial.js
+
 import mongoose from "mongoose";
 
 const giverSchema = new mongoose.Schema(
