@@ -4,65 +4,137 @@ import express from "express";
 import {
   register,
   verifyEmail,
+  resendVerificationEmail,
   login,
   refreshTokenController,
   logout,
-  googleAuthCallback,
   sendPhoneOTP,
   verifyPhoneOTP,
-  resendVerificationEmail,
+  forgotPassword,
+  resetPasswordController,
+  verifyTwoFactor,
 } from "../../../controllers/authController.js";
 import passport from "passport";
-
-// Initialize Passport configuration
 import "../../../config/passport.js"; // Passport configuration file
 import { protect, authorize } from "../../../middlewares/auth.js";
+import {
+  passwordResetRateLimiter,
+  emailResendRateLimiter,
+  twoFactorRateLimiter,
+} from "../../../middlewares/rateLimiter.js";
+import validators, {
+  createValidator,
+  validateRequest,
+} from "../../../utils/validators.js";
+import { csrfProtection, attachCsrfToken } from "../../../middlewares/csrf.js";
 
 const router = express.Router();
 
-// Registration route
+// Apply CSRF protection to state-changing routes
 router.post(
   "/register",
-  register // Rate limiting and validation handled within the controller
+  csrfProtection,
+  createValidator(validators.authValidators.register),
+  validateRequest,
+  register
 );
 
-// Email verification route
-router.get("/verify-email/:token", verifyEmail);
+router.post(
+  "/resend-verification",
+  csrfProtection,
+  protect,
+  emailResendRateLimiter,
+  createValidator(validators.authValidators.emailResend),
+  validateRequest,
+  resendVerificationEmail
+);
 
-// Login route
 router.post(
   "/login",
-  login // Rate limiting and validation handled within the controller
+  csrfProtection,
+  createValidator(validators.authValidators.login),
+  validateRequest,
+  login
 );
 
-// Refresh token route
-router.post("/refresh-token", refreshTokenController);
+router.post(
+  "/verify-2fa",
+  csrfProtection,
+  protect,
+  twoFactorRateLimiter, // Apply rate limiter
+  createValidator(validators.twoFactorValidation.verify),
+  validateRequest,
+  verifyTwoFactor
+);
 
-// Logout route
-router.post("/logout", protect, logout);
+router.post("/refresh-token", csrfProtection, refreshTokenController);
 
-// Send OTP route
-router.post("/send-otp", sendPhoneOTP);
+router.post("/logout", csrfProtection, protect, logout);
 
-// Verify OTP route
-router.post("/verify-otp", verifyPhoneOTP);
+router.post(
+  "/send-otp",
+  csrfProtection,
+  protect,
+  createValidator(validators.twoFactorValidation.sendOTP),
+  validateRequest,
+  sendPhoneOTP
+);
 
-// Resend verification email
-router.post("/resend-verification", resendVerificationEmail);
+router.post(
+  "/verify-otp",
+  csrfProtection,
+  protect,
+  createValidator(validators.twoFactorValidation.verifyOTP),
+  validateRequest,
+  verifyPhoneOTP
+);
+
+router.post(
+  "/password-reset-request",
+  csrfProtection,
+  passwordResetRateLimiter,
+  createValidator(validators.authValidators.forgotPassword),
+  validateRequest,
+  forgotPassword
+);
+
+router.post(
+  "/reset-password",
+  csrfProtection,
+  passwordResetRateLimiter,
+  createValidator(validators.authValidators.resetPassword),
+  validateRequest,
+  resetPasswordController
+);
+
+// Attach CSRF token to authentication routes
+router.get("/register", attachCsrfToken, (req, res) => {
+  res.json({ csrfToken: res.locals.csrfToken });
+});
+
+router.get("/login", attachCsrfToken, (req, res) => {
+  res.json({ csrfToken: res.locals.csrfToken });
+});
 
 // Google OAuth routes with state parameter for CSRF protection
-router.get(
-  "/google",
-  passport.authenticate("google", { scope: ["profile", "email"], state: true })
-);
+router.get("/google", csrfProtection, (req, res, next) => {
+  req.session.oauthState = crypto.randomBytes(16).toString("hex");
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+    state: req.session.oauthState,
+  })(req, res, next);
+});
 
 router.get(
   "/google/callback",
+  csrfProtection,
   passport.authenticate("google", {
     failureRedirect: `${process.env.CLIENT_URL}/login`,
     session: false,
   }),
-  googleAuthCallback
+  async (req, res) => {
+    res.redirect(`${process.env.CLIENT_URL}/auth/success`);
+  }
 );
 
 export default router;

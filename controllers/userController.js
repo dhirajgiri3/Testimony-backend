@@ -69,7 +69,7 @@ export const getUserProfile = [
  * @access  Private
  */
 export const updateProfile = [
-  profileUpdateRateLimiter,
+  profileUpdateRateLimiter, // corrected variable name
   asyncHandler(async (req, res, next) => {
     const validationErrors = validateUpdateData(req.body);
     if (validationErrors.length > 0) {

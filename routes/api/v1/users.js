@@ -11,7 +11,7 @@ import {
   performPasswordReset,
   enable2FA,
   disable2FA,
-  uploadProfilePic
+  uploadProfilePic,
 } from '../../../controllers/userController.js';
 import { protect } from '../../../middlewares/auth.js';
 import { validateRequest } from '../../../middlewares/validate.js';
@@ -33,8 +33,11 @@ import {
 
 const router = express.Router();
 
+// Get current user
+router.get('/me', protect, cache("user_me", 300), getMe);
+
 // Profile routes
-router.get('/profile', protect, cache(300), getUserProfile);
+router.get('/profile', protect, cache("user_profile", 300), getUserProfile);
 router.put(
   '/profile',
   protect,
@@ -74,9 +77,6 @@ router.delete(
   emailVerificationRateLimiter,
   deleteAccount
 );
-
-// Get current user with caching
-router.get('/me', protect, cache(300), getMe); // Cache for 5 minutes
 
 // Export user data
 router.get('/export-data', protect, exportData);
@@ -153,3 +153,4 @@ router.post(
 );
 
 export default router;
+
