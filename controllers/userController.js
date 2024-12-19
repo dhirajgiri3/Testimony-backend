@@ -1,5 +1,3 @@
-// src/controllers/userController.js
-
 import asyncHandler from "express-async-handler";
 import {
   getUserById,
@@ -13,13 +11,13 @@ import {
   resetPassword,
   enableTwoFactorAuth,
   disableTwoFactorAuth,
-  uploadProfilePicture
+  uploadProfilePicture,
 } from "../services/userService.js";
 import {
   validateUpdateData,
   validatePasswordResetData,
   validateTwoFactorData,
-  validateProfilePicture
+  validateProfilePicture,
 } from "../utils/validators.js";
 import { logger } from "../utils/logger.js";
 import AppError from "../utils/appError.js";
@@ -35,7 +33,7 @@ import { cache } from "../middlewares/cache.js";
  * @access  Private
  */
 export const getMe = [
-  cache('user_me'),
+  cache("user_me"),
   asyncHandler(async (req, res, next) => {
     const user = await getCurrentUserService(req.user.id);
 
@@ -52,15 +50,15 @@ export const getMe = [
  * @access  Private
  */
 export const getUserProfile = [
-  cache('user_profile'),
+  cache("user_profile"),
   asyncHandler(async (req, res, next) => {
     const user = await getUserById(req.user.id);
     if (!user) {
-      return next(new AppError('User not found', 404));
+      return next(new AppError("User not found", 404));
     }
     res.status(200).json({
       success: true,
-      data: user
+      data: user,
     });
   }),
 ];
@@ -75,7 +73,7 @@ export const updateProfile = [
   asyncHandler(async (req, res, next) => {
     const validationErrors = validateUpdateData(req.body);
     if (validationErrors.length > 0) {
-      throw new AppError('Validation failed', 400, validationErrors);
+      throw new AppError("Validation failed", 400, validationErrors);
     }
 
     const user = await updateUserProfile(req.user.id, req.body);
@@ -83,7 +81,7 @@ export const updateProfile = [
     res.status(200).json({
       success: true,
       data: user,
-      message: 'Profile updated successfully'
+      message: "Profile updated successfully",
     });
   }),
 ];
@@ -101,7 +99,7 @@ export const updatePreferences = [
     res.status(200).json({
       success: true,
       data: preferences,
-      message: 'Preferences updated successfully'
+      message: "Preferences updated successfully",
     });
   }),
 ];
@@ -119,7 +117,7 @@ export const updateSettings = [
     res.status(200).json({
       success: true,
       data: settings,
-      message: 'Settings updated successfully'
+      message: "Settings updated successfully",
     });
   }),
 ];
@@ -165,16 +163,16 @@ export const exportData = [
 export const forgotPassword = [
   asyncHandler(async (req, res, next) => {
     const { email } = req.body;
-    
+
     if (!email) {
-      throw new AppError('Email is required', 400);
+      throw new AppError("Email is required", 400);
     }
 
     await initiatePasswordReset(email);
 
     res.status(200).json({
       success: true,
-      message: 'Password reset instructions sent to your email.',
+      message: "Password reset instructions sent to your email.",
     });
   }),
 ];
@@ -189,14 +187,14 @@ export const performPasswordReset = [
     const { token, newPassword } = req.body;
 
     if (!token || !newPassword) {
-      throw new AppError('Token and new password are required', 400);
+      throw new AppError("Token and new password are required", 400);
     }
 
     await resetPassword(token, newPassword);
 
     res.status(200).json({
       success: true,
-      message: 'Password has been reset successfully.',
+      message: "Password has been reset successfully.",
     });
   }),
 ];
@@ -210,15 +208,15 @@ export const enable2FA = [
   asyncHandler(async (req, res, next) => {
     const { method } = req.body;
 
-    if (!['sms', 'authenticator'].includes(method)) {
-      throw new AppError('Invalid 2FA method', 400);
+    if (!["sms", "authenticator"].includes(method)) {
+      throw new AppError("Invalid 2FA method", 400);
     }
 
     await enableTwoFactorAuth(req.user.id, method);
 
     res.status(200).json({
       success: true,
-      message: 'Two-Factor Authentication enabled successfully.',
+      message: "Two-Factor Authentication enabled successfully.",
     });
   }),
 ];
@@ -234,7 +232,7 @@ export const disable2FA = [
 
     res.status(200).json({
       success: true,
-      message: 'Two-Factor Authentication disabled successfully.',
+      message: "Two-Factor Authentication disabled successfully.",
     });
   }),
 ];
@@ -248,17 +246,21 @@ export const uploadProfilePic = [
   profileUpdateRateLimit,
   asyncHandler(async (req, res, next) => {
     if (!req.file) {
-      throw new AppError('No file uploaded', 400);
+      throw new AppError("No file uploaded", 400);
     }
 
     validateProfilePicture(req.file);
 
-    const imageUrl = await uploadProfilePicture(req.user.id, req.file.buffer, req.file.mimetype);
+    const imageUrl = await uploadProfilePicture(
+      req.user.id,
+      req.file.buffer,
+      req.file.mimetype
+    );
 
     res.status(200).json({
       success: true,
       data: { profilePicture: imageUrl },
-      message: 'Profile picture uploaded successfully.',
+      message: "Profile picture uploaded successfully.",
     });
   }),
 ];

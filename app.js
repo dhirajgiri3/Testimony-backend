@@ -1,5 +1,3 @@
-// src/app.js
-
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
@@ -19,6 +17,8 @@ import './config/passport.js'; // Passport configuration
 import session from 'express-session';
 import { emailVerificationRateLimit, emailResendRateLimit, profileUpdateRateLimit, tokenRefreshRateLimit, loginAttemptRateLimit, otpRequestRateLimit, passwordResetRateLimit } from './middlewares/rateLimiter.js'; // Import rate limit middleware
 import { requestLogger } from './middlewares/logger.js';
+import rateLimit from 'express-rate-limit';
+import mongoSanitize from 'express-mongo-sanitize';
 
 // Load environment variables
 dotenv.config();
@@ -108,6 +108,17 @@ app.use('/api/v1/token/refresh', tokenRefreshRateLimit);
 app.use('/api/v1/login', loginAttemptRateLimit);
 app.use('/api/v1/otp/request', otpRequestRateLimit);
 app.use('/api/v1/password/reset', passwordResetRateLimit);
+
+// General Rate Limiting
+const generalRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.'
+});
+app.use(generalRateLimiter);
+
+// Sanitize MongoDB queries
+app.use(mongoSanitize());
 
 // Logging
 if (process.env.NODE_ENV === 'development') {

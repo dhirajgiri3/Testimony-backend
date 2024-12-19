@@ -1,5 +1,3 @@
-// src/middlewares/errorHandler.js
-
 import { logger } from '../utils/logger.js';
 import AppError from '../utils/appError.js';
 

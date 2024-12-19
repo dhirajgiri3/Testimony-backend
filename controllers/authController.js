@@ -1,5 +1,3 @@
-// src/controllers/authController.js
-
 import asyncHandler from 'express-async-handler';
 import queues from '../jobs/queues.js';
 import {
@@ -24,6 +22,15 @@ import {
   passwordResetRateLimit,
 } from '../middlewares/rateLimiter.js';
 import { rotateRefreshToken } from '../services/tokenService.js';
+import rateLimit from 'express-rate-limit';
+import { body, validationResult } from 'express-validator';
+
+// Rate limiting for auth endpoints
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // limit each IP to 10 requests per windowMs
+  message: "Too many requests from this IP, please try again later"
+});
 
 /**
  * @desc    Register a new user
@@ -31,8 +38,18 @@ import { rotateRefreshToken } from '../services/tokenService.js';
  * @access  Public
  */
 export const register = [
+  authRateLimiter,
   emailVerificationRateLimit,
+  body('firstName').notEmpty().withMessage('First name is required'),
+  body('lastName').notEmpty().withMessage('Last name is required'),
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long'),
   asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { firstName, lastName, email, password, phone } = req.body;
 
     if (!firstName || !lastName || !email || !password) {
@@ -70,6 +87,7 @@ export const register = [
  * @access  Public
  */
 export const verifyEmail = [
+  authRateLimiter,
   asyncHandler(async (req, res, next) => {
     const token = req.params.token;
 
@@ -92,8 +110,15 @@ export const verifyEmail = [
  * @access  Public
  */
 export const resendVerificationEmail = [
+  authRateLimiter,
   emailResendRateLimit,
+  body('email').isEmail().withMessage('Valid email is required'),
   asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { email } = req.body;
 
     if (!email) {
@@ -124,8 +149,16 @@ export const resendVerificationEmail = [
  * @access  Public
  */
 export const login = [
+  authRateLimiter,
   loginAttemptRateLimit,
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('password').notEmpty().withMessage('Password is required'),
   asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { email, password, rememberMe = false } = req.body;
 
     const { accessToken, refreshToken, user } = await loginUser(
@@ -174,6 +207,7 @@ export const login = [
  * @access  Public
  */
 export const refreshTokenController = [
+  authRateLimiter,
   tokenRefreshRateLimit,
   asyncHandler(async (req, res, next) => {
     const oldRefreshToken = req.cookies.refresh_token;
@@ -193,33 +227,36 @@ export const refreshTokenController = [
  * @route   GET /api/v1/auth/google/callback
  * @access  Public
  */
-export const googleAuthCallback = asyncHandler(async (req, res, next) => {
-  if (!req.user) {
-    throw new AppError('Authentication failed', 401);
-  }
+export const googleAuthCallback = [
+  authRateLimiter,
+  asyncHandler(async (req, res, next) => {
+    if (!req.user) {
+      throw new AppError('Authentication failed', 401);
+    }
 
-  const user = req.user;
-  const accessToken = user.generateAccessToken();
-  const refreshToken = user.generateRefreshToken();
+    const user = req.user;
+    const accessToken = user.generateAccessToken();
+    const refreshToken = user.generateRefreshToken();
 
-  const cookieOptions = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-  };
+    const cookieOptions = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+    };
 
-  res.cookie('access_token', accessToken, {
-    ...cookieOptions,
-    maxAge: ms(process.env.JWT_ACCESS_EXPIRES_IN || '15m'),
-  });
+    res.cookie('access_token', accessToken, {
+      ...cookieOptions,
+      maxAge: ms(process.env.JWT_ACCESS_EXPIRES_IN || '15m'),
+    });
 
-  res.cookie('refresh_token', refreshToken, {
-    ...cookieOptions,
-    maxAge: ms(process.env.JWT_REFRESH_EXPIRES_IN || '7d'),
-  });
+    res.cookie('refresh_token', refreshToken, {
+      ...cookieOptions,
+      maxAge: ms(process.env.JWT_REFRESH_EXPIRES_IN || '7d'),
+    });
 
-  res.redirect(`${process.env.CLIENT_URL}/auth/success`);
-});
+    res.redirect(`${process.env.CLIENT_URL}/auth/success`);
+  })
+];
 
 /**
  * @desc    Logout user
@@ -227,6 +264,7 @@ export const googleAuthCallback = asyncHandler(async (req, res, next) => {
  * @access  Private
  */
 export const logout = [
+  authRateLimiter,
   asyncHandler(async (req, res, next) => {
     if (!req.user?.id) {
       throw new AppError('Not authenticated', 401);
@@ -267,8 +305,15 @@ export const logout = [
  * @access  Public
  */
 export const sendPhoneOTP = [
+  authRateLimiter,
   otpRequestRateLimit,
+  body('phone').notEmpty().withMessage('Phone number is required'),
   asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { phone } = req.body;
 
     if (!phone) {
@@ -290,7 +335,15 @@ export const sendPhoneOTP = [
  * @access  Public
  */
 export const verifyPhoneOTP = [
+  authRateLimiter,
+  body('phone').notEmpty().withMessage('Phone number is required'),
+  body('code').notEmpty().withMessage('OTP code is required'),
   asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const { phone, code } = req.body;
 
     if (!phone || !code) {

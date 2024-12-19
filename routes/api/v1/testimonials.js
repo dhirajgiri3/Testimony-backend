@@ -1,6 +1,6 @@
 // src/routes/api/v1/testimonials.js
 
-import express from 'express';
+import express from "express";
 import {
   createTestimonialRequestController,
   submitTestimonialController,
@@ -20,35 +20,35 @@ import {
   restoreTestimonialController,
   deleteTestimonialController,
   getTestimonials,
-  bulkApproveRejectTestimonials
-} from '../../../controllers/testimonialController.js';
-import { protect } from '../../../middlewares/auth.js';
-import { authorize } from '../../../middlewares/role.js';
-import { 
-  testimonialRequestValidation, 
-  testimonialApprovalValidation, 
-  testimonialVisibilityValidation, 
+  bulkApproveRejectTestimonials,
+} from "../../../controllers/testimonialController.js";
+import { protect } from "../../../middlewares/auth.js";
+import { authorize } from "../../../middlewares/role.js";
+import {
+  testimonialRequestValidation,
+  testimonialApprovalValidation,
+  testimonialVisibilityValidation,
   testimonialShareValidation,
   bulkProcessValidation,
   testimonialReportValidation,
   certificateGenerationValidation,
   archiveRestoreValidation,
-  createValidator
-} from '../../../utils/validators.js';
-import { validateRequest } from '../../../middlewares/validate.js';
-import { rateLimitTestimonials } from '../../../middlewares/rateLimiter.js';
+  createValidator,
+} from "../../../utils/validators.js";
+import { validateRequest } from "../../../middlewares/validate.js";
+import { rateLimitTestimonials } from "../../../middlewares/rateLimiter.js";
 import {
   validateGetTestimonials,
   validateBulkAction,
-} from '../../../middlewares/validators/testimonialValidator.js';
+} from "../../../middlewares/validators/testimonialValidator.js";
 
 const router = express.Router();
 
 // Create testimonial request (Seeker)
 router.post(
-  '/create',
+  "/create",
   protect,
-  authorize('seeker'),
+  authorize("seeker"),
   rateLimitTestimonials,
   createValidator(testimonialRequestValidation),
   validateRequest,
@@ -57,13 +57,13 @@ router.post(
 
 // Submit testimonial (Giver via unique link)
 router.post(
-  '/submit/:testimonialId/giver/:giverToken',
+  "/submit/:testimonialId/giver/:giverToken",
   submitTestimonialController
 );
 
 // Report a testimonial (Viewer)
 router.post(
-  '/report/:testimonialId',
+  "/report/:testimonialId",
   createValidator(testimonialReportValidation),
   validateRequest,
   reportTestimonialController
@@ -71,9 +71,9 @@ router.post(
 
 // Approve a testimonial (Admin)
 router.put(
-  '/approve/:testimonialId',
+  "/approve/:testimonialId",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(testimonialApprovalValidation),
   validateRequest,
   approveTestimonialController
@@ -81,9 +81,9 @@ router.put(
 
 // Reject a testimonial (Admin)
 router.put(
-  '/reject/:testimonialId',
+  "/reject/:testimonialId",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(testimonialApprovalValidation),
   validateRequest,
   rejectTestimonialController
@@ -91,9 +91,9 @@ router.put(
 
 // Toggle testimonial visibility (Admin)
 router.put(
-  '/:testimonialId/toggle-visibility',
+  "/:testimonialId/toggle-visibility",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(testimonialVisibilityValidation),
   validateRequest,
   toggleVisibilityController
@@ -101,9 +101,9 @@ router.put(
 
 // Share a testimonial
 router.post(
-  '/:testimonialId/share',
+  "/:testimonialId/share",
   protect,
-  authorize('seeker', 'admin'),
+  authorize("seeker", "admin"),
   createValidator(testimonialShareValidation),
   validateRequest,
   shareTestimonialController
@@ -111,9 +111,9 @@ router.post(
 
 // Bulk process testimonials (Admin)
 router.post(
-  '/bulk-process',
+  "/bulk-process",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(bulkProcessValidation),
   validateRequest,
   bulkProcessTestimonialsController
@@ -121,9 +121,9 @@ router.post(
 
 // Generate testimonial certificate (Admin/Seeker)
 router.post(
-  '/:testimonialId/certificate',
+  "/:testimonialId/certificate",
   protect,
-  authorize('admin', 'seeker'),
+  authorize("admin", "seeker"),
   createValidator(certificateGenerationValidation),
   validateRequest,
   generateCertificateController
@@ -131,9 +131,9 @@ router.post(
 
 // Archive testimonial (Admin)
 router.put(
-  '/:testimonialId/archive',
+  "/:testimonialId/archive",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(archiveRestoreValidation),
   validateRequest,
   archiveTestimonialController
@@ -141,9 +141,9 @@ router.put(
 
 // Restore testimonial (Admin)
 router.put(
-  '/:testimonialId/restore',
+  "/:testimonialId/restore",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   createValidator(archiveRestoreValidation),
   validateRequest,
   restoreTestimonialController
@@ -152,35 +152,40 @@ router.put(
 // CRUD operations for testimonials
 
 // Create a new testimonial
-router.post('/', protect, createTestimonialRequestController);
+router.post("/", protect, createTestimonialRequestController);
 
 // Get all testimonials for a seeker
-router.get('/:seekerId', protect, getTestimonialsController);
+router.get("/:seekerId", protect, getTestimonialsController);
 
 // Get public testimonials
-router.get('/public', getPublicTestimonialsController);
+router.get("/public", getPublicTestimonialsController);
 
 // Get testimonial by ID
-router.get('/:testimonialId', getTestimonialByIdController);
+router.get("/:testimonialId", getTestimonialByIdController);
 
 // Search testimonials
-router.get('/search', protect, searchTestimonialsController);
+router.get("/search", protect, searchTestimonialsController);
 
 // Get testimonial statistics
-router.get('/stats', protect, getTestimonialStatsController);
+router.get("/stats", protect, getTestimonialStatsController);
 // Get testimonials with pagination
 
 // Delete a testimonial
-router.delete('/:testimonialId', protect, authorize('admin'), deleteTestimonialController);
+router.delete(
+  "/:testimonialId",
+  protect,
+  authorize("admin"),
+  deleteTestimonialController
+);
 
 // Get testimonials with pagination
-router.get('/', protect, validateGetTestimonials, getTestimonials);
+router.get("/", protect, validateGetTestimonials, getTestimonials);
 
 // Bulk approve or reject testimonials
 router.post(
-  '/bulk-action',
+  "/bulk-action",
   protect,
-  authorize('admin'),
+  authorize("admin"),
   validateBulkAction,
   bulkApproveRejectTestimonials
 );

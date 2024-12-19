@@ -1,16 +1,20 @@
-// src/middlewares/auth.js
-
 import jwt from 'jsonwebtoken';
 import asyncHandler from 'express-async-handler';
 import User from '../models/User.js';
 import { isTokenBlacklisted } from '../services/tokenBlacklistService.js';
 import AppError from '../utils/appError.js';
 import { logger } from '../utils/logger.js';
+import rateLimit from 'express-rate-limit';
 
 /**
  * Protect routes by verifying JWT tokens from HttpOnly cookies
  */
 export const protect = [
+  rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.'
+  }),
   asyncHandler(async (req, res, next) => {
     let accessToken;
 
@@ -48,7 +52,7 @@ export const protect = [
       logger.error('Authentication error:', error);
       throw new AppError('Not authorized to access this route', 401);
     }
-  }),
+  })
 ];
 
 /**

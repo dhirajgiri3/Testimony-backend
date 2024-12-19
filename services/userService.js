@@ -1,5 +1,3 @@
-// src/services/userService.js
-
 import User from "../models/User.js";
 import AppError from "../utils/appError.js";
 import { logger } from "../utils/logger.js";

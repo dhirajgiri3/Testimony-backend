@@ -1,5 +1,3 @@
-// src/controllers/analyticsController.js
-
 import Testimonial from "../models/Testimonial.js";
 import ActivityLog from "../models/ActivityLog.js";
 import Analytics from "../models/Analytics.js"; // Added missing import

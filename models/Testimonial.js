@@ -34,7 +34,15 @@ const giverSchema = new mongoose.Schema(
     },
     projectCategory: {
       type: String,
-      enum: ["Web Development", "Mobile Development", "Marketing", "Design", "Consulting", "Content Creation", "Other"],
+      enum: [
+        "Web Development",
+        "Mobile Development",
+        "Marketing",
+        "Design",
+        "Consulting",
+        "Content Creation",
+        "Other",
+      ],
       default: "Other",
     },
     media: [
@@ -54,7 +62,8 @@ const giverSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    approvalHistory: [ // New Field
+    approvalHistory: [
+      // New Field
       {
         status: {
           type: String,
@@ -114,7 +123,14 @@ const testimonialSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "in-progress", "completed", "reported", "approved", "rejected"],
+      enum: [
+        "pending",
+        "in-progress",
+        "completed",
+        "reported",
+        "approved",
+        "rejected",
+      ],
       default: "pending",
     },
     adminId: {
@@ -124,16 +140,19 @@ const testimonialSchema = new mongoose.Schema(
     reason: {
       type: String,
     },
-    isPublic: { // New Field
+    isPublic: {
+      // New Field
       type: Boolean,
       default: false,
     },
-    approvalStatus: { // New Field
+    approvalStatus: {
+      // New Field
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
     },
-    approvalHistory: [ // New Field
+    approvalHistory: [
+      // New Field
       {
         status: {
           type: String,
@@ -169,6 +188,12 @@ const testimonialSchema = new mongoose.Schema(
       type: Map,
       of: Number, // e.g., { joy: 0.7, anger: 0.1 }
       default: {},
+    },
+    analysis: {
+      skills: [String],
+      sentiment: Number,
+      emotions: mongoose.Schema.Types.Mixed,
+      analyzedAt: Date,
     },
     createdAt: {
       type: Date,

@@ -1,9 +1,8 @@
-// src/config/bullmq.js
-
 import pkg from 'bullmq';
 const { Queue, QueueScheduler } = pkg;
 import dotenv from 'dotenv';
 import { logger } from '../utils/logger.js';
+import redis from 'redis';
 
 dotenv.config();
 
@@ -41,6 +40,21 @@ Object.keys(queues).forEach((queueName) => {
   scheduler.on('error', (err) => {
     logger.error(`QueueScheduler Error in ${queueName}:`, err);
   });
+});
+
+const redisClient = redis.createClient({
+  host: process.env.REDIS_HOST,
+  port: process.env.REDIS_PORT,
+  password: process.env.REDIS_PASSWORD,
+  tls: process.env.REDIS_TLS === 'true' ? { rejectUnauthorized: false } : undefined,
+});
+
+redisClient.on('error', (err) => {
+  logger.error('Redis connection error:', err);
+});
+
+redisClient.on('connect', () => {
+  logger.info('Connected to Redis');
 });
 
 export default queues;

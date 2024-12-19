@@ -1,5 +1,3 @@
-// src/services/tokenService.js
-
 import jwt from "jsonwebtoken";
 import { addToTokenBlacklist } from "./tokenBlacklistService.js";
 import User from "../models/User.js";

@@ -1,5 +1,3 @@
-// /backend/config/email.js
-
 import nodemailer from "nodemailer";
 import { logger } from "../utils/logger.js";
 import dotenv from "dotenv";

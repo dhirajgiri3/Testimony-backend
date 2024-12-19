@@ -1,5 +1,3 @@
-// src/services/authService.js
-
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import ActivityLog from "../models/ActivityLog.js";
@@ -12,6 +10,7 @@ import {
 import AppError from "../utils/appError.js";
 import { addToTokenBlacklist } from "./tokenBlacklistService.js";
 import { logger } from "../utils/logger.js";
+import { body, validationResult } from "express-validator";
 
 /**
  * Register a new user
