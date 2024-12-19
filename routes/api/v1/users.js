@@ -1,5 +1,3 @@
-// src/routes/api/v1/users.js
-
 import express from 'express';
 import {
   getUserProfile,
@@ -123,6 +121,35 @@ router.post(
   protect,
   upload.single('profilePicture'),
   uploadProfilePic
+);
+
+// User registration with email verification
+router.post(
+  '/register',
+  sanitizeBody,
+  createValidator(updateProfileValidation.register),
+  validateRequest,
+  registerUser
+);
+
+// Login with rate limiting and CSRF protection
+router.post(
+  '/login',
+  loginRateLimiter,
+  sanitizeBody,
+  createValidator(updateProfileValidation.login),
+  validateRequest,
+  csrfProtection,
+  loginUser
+);
+
+// Password reset request
+router.post(
+  '/password-reset-request',
+  sanitizeBody,
+  createValidator(passwordResetValidation.requestReset),
+  validateRequest,
+  passwordResetRequest
 );
 
 export default router;

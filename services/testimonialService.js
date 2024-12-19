@@ -1,5 +1,3 @@
-// src/services/testimonialService.js
-
 import mongoose from 'mongoose';
 import Testimonial from "../models/Testimonial.js";
 import User from "../models/User.js";
