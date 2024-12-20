@@ -1,38 +1,38 @@
 // src/routes/api/v1/ai.js
 
-import express from "express";
+import express from 'express';
 import {
   generateAITestimonialSuggestion,
   handleChatQuery,
   getAdvancedInsights,
-} from "../../../controllers/aiController.js";
-import { protect, authorize } from "../../../middlewares/auth.js";
+} from '../../../controllers/aiController.js';
+import { protect, authorize } from '../../../middlewares/auth.js';
 import {
   aiProcessingRateLimiter,
   profileUpdateRateLimiter,
-} from "../../../middlewares/rateLimiter.js";
-import { chatValidation, createValidator } from "../../../utils/validators.js";
-import { validateRequest } from "../../../middlewares/validate.js";
-import { body } from "express-validator";
-import { param } from "express-validator";
+} from '../../../middlewares/rateLimiter.js';
+import { chatValidation, createValidator } from '../../../utils/validators.js';
+import { validateRequest } from '../../../middlewares/validate.js';
+import { body } from 'express-validator';
+import { param } from 'express-validator';
 
 const router = express.Router();
 
 // Generate AI testimonial suggestion (Seeker)
 router.post(
-  "/generate-testimonial",
+  '/generate-testimonial',
   protect,
-  authorize("seeker"),
+  authorize('seeker'),
   aiProcessingRateLimiter,
   createValidator([
-    body("projectDetails")
+    body('projectDetails')
       .notEmpty()
-      .withMessage("Project details are required"),
-    body("skills").optional().isArray().withMessage("Skills must be an array"),
-    body("skills.*")
+      .withMessage('Project details are required'),
+    body('skills').optional().isArray().withMessage('Skills must be an array'),
+    body('skills.*')
       .optional()
       .isString()
-      .withMessage("Each skill must be a string"),
+      .withMessage('Each skill must be a string'),
   ]),
   validateRequest,
   generateAITestimonialSuggestion
@@ -40,11 +40,11 @@ router.post(
 
 // Handle conversational queries (Seeker)
 router.post(
-  "/chat",
+  '/chat',
   protect,
-  authorize("seeker"),
+  authorize('seeker'),
   createValidator([
-    body("query").notEmpty().withMessage("Chat query is required"),
+    body('query').notEmpty().withMessage('Chat query is required'),
   ]),
   validateRequest,
   handleChatQuery
@@ -56,14 +56,14 @@ router.post(
  * @access  Protected and Authorized
  */
 router.get(
-  "/insights/:seekerId",
+  '/insights/:seekerId',
   protect,
-  authorize("seeker"),
+  authorize('seeker'),
   aiProcessingRateLimiter,
   createValidator([
-    param("seekerId")
+    param('seekerId')
       .matches(/^[0-9a-fA-F]{24}$/)
-      .withMessage("Invalid seeker ID"),
+      .withMessage('Invalid seeker ID'),
   ]),
   validateRequest,
   getAdvancedInsights

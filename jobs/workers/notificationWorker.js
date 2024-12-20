@@ -1,10 +1,10 @@
-import { Worker } from "bullmq";
-import { sendInAppNotification } from "../../services/notificationService.js";
-import { logger } from "../../utils/logger.js";
-import {redis} from "../../config/redis.js";
+import { Worker } from 'bullmq';
+import { sendInAppNotification } from '../../services/notificationService.js';
+import { logger } from '../../utils/logger.js';
+import { redis } from '../../config/redis.js';
 
 const notificationWorker = new Worker(
-  "notificationQueue",
+  'notificationQueue',
   async (job) => {
     const { userId, message } = job.data;
     if (!userId || !message) {
@@ -27,11 +27,11 @@ const notificationWorker = new Worker(
 );
 
 // Event Listeners
-notificationWorker.on("completed", (job) => {
+notificationWorker.on('completed', (job) => {
   logger.info(`✅ Notification job ${job.id} completed successfully.`);
 });
 
-notificationWorker.on("failed", (job, err) => {
+notificationWorker.on('failed', (job, err) => {
   logger.error(
     `❌ Notification job ${job.id} failed with error: ${err.message}`
   );

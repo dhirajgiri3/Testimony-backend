@@ -1,12 +1,12 @@
 // src/middlewares/auth.js
 
-import asyncHandler from "express-async-handler";
-import User from "../models/User.js";
-import { isTokenBlacklisted } from "../services/tokenBlacklistService.js";
-import { createError } from "../utils/errors.js";
-import { logger } from "../utils/logger.js";
-import { verifyAndCheckToken } from "../services/tokenService.js";
-import { twoFactorService } from "../services/twoFactorService.js";
+import asyncHandler from 'express-async-handler';
+import User from '../models/User.js';
+import { isTokenBlacklisted } from '../services/tokenBlacklistService.js';
+import { createError } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
+import { verifyAndCheckToken } from '../services/tokenService.js';
+import { twoFactorService } from '../services/twoFactorService.js';
 
 /**
  * Base authentication check
@@ -14,46 +14,46 @@ import { twoFactorService } from "../services/twoFactorService.js";
  */
 const baseAuthCheck = async (token) => {
   if (!token) {
-    throw createError("authentication", "Not authorized, token missing", 401);
+    throw createError('authentication', 'Not authorized, token missing', 401);
   }
 
   try {
     // Check if token is blacklisted
     const isBlacklistedToken = await isTokenBlacklisted(token);
     if (isBlacklistedToken) {
-      throw createError("authentication", "Token has been revoked", 401);
+      throw createError('authentication', 'Token has been revoked', 401);
     }
 
     // Verify token
     const decoded = await verifyAndCheckToken(
       token,
       process.env.JWT_ACCESS_SECRET,
-      "access"
+      'access'
     );
 
     // Fetch user and select necessary fields
     const user = await User.findById(decoded.id)
-      .select("+twoFactorEnabled +twoFactorSecret")
+      .select('+twoFactorEnabled +twoFactorSecret')
       .lean()
       .exec();
 
     if (!user) {
-      throw createError("authentication", "User not found", 401);
+      throw createError('authentication', 'User not found', 401);
     }
 
     // Check if password was changed after token issuance
     if (user.passwordChangedAt && user.passwordChangedAfter(decoded.iat)) {
       throw createError(
-        "authentication",
-        "Password recently changed, please log in again",
+        'authentication',
+        'Password recently changed, please log in again',
         401
       );
     }
 
     return { user, decoded };
   } catch (error) {
-    logger.error("Authentication error:", error);
-    throw createError("authentication", "Authentication failed", 401);
+    logger.error('Authentication error:', error);
+    throw createError('authentication', 'Authentication failed', 401);
   }
 };
 
@@ -72,7 +72,7 @@ export const protect = asyncHandler(async (req, res, next) => {
     if (!req.session.isTwoFactorAuthenticated) {
       return res.status(401).json({
         success: false,
-        message: "Two-factor authentication required",
+        message: 'Two-factor authentication required',
       });
     }
   }
@@ -87,13 +87,13 @@ export const protect = asyncHandler(async (req, res, next) => {
 export const authorize = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
-      return next(createError("authorization", "User not authenticated", 401));
+      return next(createError('authorization', 'User not authenticated', 401));
     }
     if (!roles.includes(req.user.role)) {
       return next(
         createError(
-          "authorization",
-          `Required role: ${roles.join(" or ")}`,
+          'authorization',
+          `Required role: ${roles.join(' or ')}`,
           403
         )
       );

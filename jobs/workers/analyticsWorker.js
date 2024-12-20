@@ -1,10 +1,10 @@
 // src/jobs/workers/analyticsWorker.js
 
-import { Worker } from "bullmq";
-import { updateAnalytics } from "../../services/analyticsService.js";
-import { logger } from "../../utils/logger.js";
-import {redis} from "../../config/redis.js";
-import {queues} from "../queues.js";
+import { Worker } from 'bullmq';
+import { updateAnalytics } from '../../services/analyticsService.js';
+import { logger } from '../../utils/logger.js';
+import { redis } from '../../config/redis.js';
+import { queues } from '../queues.js';
 
 // Constants for worker configuration
 const WORKER_CONFIG = {
@@ -15,21 +15,21 @@ const WORKER_CONFIG = {
   lockDuration: 60000, // 1 minute
   removeOnComplete: {
     count: 1000,
-    age: 24 * 3600 // 24 hours
+    age: 24 * 3600, // 24 hours
   },
   removeOnFail: {
     count: 500,
-    age: 7 * 24 * 3600 // 7 days
+    age: 7 * 24 * 3600, // 7 days
   },
   metrics: {
-    maxDataPoints: 24 * 7 // Store metrics for 7 days
-  }
+    maxDataPoints: 24 * 7, // Store metrics for 7 days
+  },
 };
 
 const analyticsWorker = new Worker(
-  "analyticsQueue",
+  'analyticsQueue',
   async (job) => {
-    const { seekerId, priority = "normal" } = job.data;
+    const { seekerId, priority = 'normal' } = job.data;
 
     if (!seekerId) {
       throw new Error(`Invalid job data. Missing 'seekerId' for job ${job.id}`);
@@ -44,37 +44,36 @@ const analyticsWorker = new Worker(
       await job.updateProgress(50);
 
       // If high priority, trigger immediate recommendations update
-      if (priority === "high") {
+      if (priority === 'high') {
         await queues.recommendationQueue.add(
-          "updateRecommendations",
+          'updateRecommendations',
           { seekerId },
           { priority: 2 }
         );
       }
 
       await job.updateProgress(100);
-      
-      return { success: true, seekerId, result };
 
+      return { success: true, seekerId, result };
     } catch (error) {
       logger.error(
         `❌ Error processing analytics job ${job.id}: ${error.message}`,
         {
           jobId: job.id,
           seekerId,
-          error: error.stack
+          error: error.stack,
         }
       );
 
       // Notify admin for critical errors
       if (job.attemptsMade >= 2) {
         await queues.notificationQueue.add(
-          "sendAdminAlert",
+          'sendAdminAlert',
           {
-            type: "ANALYTICS_FAILURE",
+            type: 'ANALYTICS_FAILURE',
             jobId: job.id,
             seekerId,
-            error: error.message
+            error: error.message,
           },
           { priority: 1 }
         );
@@ -88,35 +87,38 @@ const analyticsWorker = new Worker(
 
 // Enhanced Event Listeners
 analyticsWorker
-  .on("completed", (job, result) => {
+  .on('completed', (job, result) => {
     logger.info(`✅ Analytics job ${job.id} completed successfully.`, {
       jobId: job.id,
       seekerId: job.data.seekerId,
-      result
+      result,
     });
   })
-  .on("failed", (job, err) => {
-    logger.error(`❌ Analytics job ${job.id} failed with error: ${err.message}`, {
-      jobId: job.id,
-      seekerId: job.data.seekerId,
-      attempts: job.attemptsMade,
-      error: err.stack
-    });
+  .on('failed', (job, err) => {
+    logger.error(
+      `❌ Analytics job ${job.id} failed with error: ${err.message}`,
+      {
+        jobId: job.id,
+        seekerId: job.data.seekerId,
+        attempts: job.attemptsMade,
+        error: err.stack,
+      }
+    );
   })
-  .on("error", (err) => {
+  .on('error', (err) => {
     logger.error(`❌ Analytics worker error: ${err.message}`, {
-      error: err.stack
+      error: err.stack,
     });
   })
-  .on("stalled", (jobId) => {
+  .on('stalled', (jobId) => {
     logger.warn(`⚠️ Analytics job ${jobId} has stalled`);
   })
-  .on("progress", (job, progress) => {
+  .on('progress', (job, progress) => {
     logger.debug(`📊 Analytics job ${job.id} progress: ${progress}%`);
   });
 
 // Graceful shutdown handling
-process.on("SIGTERM", async () => {
+process.on('SIGTERM', async () => {
   await analyticsWorker.close();
 });
 

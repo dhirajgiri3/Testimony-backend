@@ -1,84 +1,80 @@
-// src/server.js
+// server.js
 
-import { createServer } from "http";
-import { app, validateEnvVars } from "./app.js";
-import { connectDB } from "./config/db.js";
-import { redis } from "./config/redis.js";
-import { logger } from "./utils/logger.js";
-import "./jobs/worker.js";
-import { testOpenAIConnection } from "./config/openAI.js";
-import mongoose from "mongoose";
-
-// Suppress specific Redis warnings
-const originalWarn = console.warn;
-console.warn = function (...args) {
-  if (
-    args.some(
-      (arg) => typeof arg === "string" && arg.includes("Eviction policy")
-    )
-  ) {
-    return;
-  }
-  originalWarn.apply(console, args);
-};
-
-const server = createServer(app);
-
-// Graceful shutdown handler
-const gracefulShutdown = async (signal) => {
-  logger.info(`${signal} received. Starting graceful shutdown...`);
-
-  const shutdownTimeout = setTimeout(() => {
-    logger.error("Forced shutdown due to timeout");
-    process.exit(1);
-  }, 30000);
-
-  try {
-    server.close(() => logger.info("HTTP server closed"));
-    await redis.quit();
-    await mongoose.connection.close();
-    await testOpenAIConnection(false); // Assuming a method to close OpenAI connections
-
-    clearTimeout(shutdownTimeout);
-    logger.info("Graceful shutdown completed");
-    process.exit(0);
-  } catch (error) {
-    logger.error("Error during graceful shutdown:", error);
-    process.exit(1);
-  }
-};
-
-// Process handlers
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled Rejection at:", promise, "reason:", reason);
-  gracefulShutdown("Unhandled Rejection");
-});
-
-process.on("uncaughtException", (error) => {
-  logger.error("Uncaught Exception:", error);
-  gracefulShutdown("Uncaught Exception");
-});
-
-["SIGTERM", "SIGINT"].forEach((signal) => {
-  process.on(signal, () => gracefulShutdown(signal));
-});
-
-// Start server
-const PORT = process.env.PORT || 5000;
+import { createServer } from 'http';
+import app from './app.js';
+import { connectDB, disconnectDB } from './config/db.js';
+import { redisClient } from './config/redis.js';
+import { logger } from './utils/logger.js';
+import { testOpenAIConnection } from './config/openAI.js';
+import {  shutdownWorkers } from './jobs/worker.js'; // Import workerInstances and shutdownWorkers
+import { initializeSocket, handleSocketConnections } from './sockets/notificationSocket.js'; // Import initializeSocket
 
 const startServer = async () => {
   try {
-    validateEnvVars();
+    // Connect to MongoDB
     await connectDB();
-    await testOpenAIConnection(true); // Assuming a method to test OpenAI connections
+    logger.info('✅ Connected to MongoDB');
+
+    // Connect to Redis
+    await redisClient.connect();
+    logger.info('✅ Connected to Redis');
+
+    // Test OpenAI Connection
+    await testOpenAIConnection();
+
+    // Create HTTP Server
+    const PORT = process.env.PORT || 5003;
+    const server = createServer(app);
+
+    // Initialize Socket.IO
+    const io = initializeSocket(server);
+
+    // Handle Socket.IO connections
+    handleSocketConnections(io);
+    logger.info('✅ Socket.IO initialized');
 
     server.listen(PORT, () => {
-      logger.info(
-        `✅ Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
-      );
+      logger.info(`🚀 Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+    });
+
+    // Graceful Shutdown
+    const shutdownSignals = ['SIGINT', 'SIGTERM'];
+
+    shutdownSignals.forEach((signal) => {
+      process.on(signal, async () => {
+        try {
+          logger.info(`${signal} received. Starting graceful shutdown...`);
+
+          // Stop accepting new connections
+          server.close(async (err) => {
+            if (err) {
+              logger.error('❌ Error during server close:', err);
+              process.exit(1);
+            }
+
+            // Disconnect from MongoDB
+            await disconnectDB();
+            logger.info('✅ MongoDB connection closed.');
+
+            // Disconnect from Redis
+            await redisClient.quit();
+            logger.info('✅ Redis connection closed.');
+
+            // Shutdown BullMQ workers
+            await shutdownWorkers();
+            logger.info('✅ BullMQ workers shut down.');
+
+            logger.info('🔒 Graceful shutdown complete.');
+            process.exit(0);
+          });
+        } catch (error) {
+          logger.error('❌ Error during graceful shutdown:', error);
+          process.exit(1);
+        }
+      });
     });
   } catch (error) {
-    logger.error("❌ Failed to start server:", error);
+    logger.error('❌ Error starting server:', error);
     process.exit(1);
   }
 };

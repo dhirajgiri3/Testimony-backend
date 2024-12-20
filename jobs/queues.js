@@ -1,52 +1,104 @@
 // src/jobs/queues.js
 
-import { Queue, QueueEvents } from "bullmq";
-import { redis } from "../config/redis.js"; // Use the singleton Redis client
-import { logger } from "../utils/logger.js";
+import { Queue, QueueScheduler, Worker, QueueEvents } from 'bullmq';
+import { redisClient } from '../config/redis.js';
+import { logger } from '../utils/logger.js';
 
-// Initialize queues
+// Initialize Queue Schedulers for reliable job processing
+const emailQueueScheduler = new QueueScheduler('emailQueue', {
+  connection: redisClient,
+});
+emailQueueScheduler.on('error', (err) => {
+  logger.error('❌ Email Queue Scheduler Error:', err);
+});
+
+const notificationQueueScheduler = new QueueScheduler('notificationQueue', {
+  connection: redisClient,
+});
+notificationQueueScheduler.on('error', (err) => {
+  logger.error('❌ Notification Queue Scheduler Error:', err);
+});
+
+// Define the Email Queue
+const emailQueue = new Queue('emailQueue', {
+  connection: redisClient,
+  defaultJobOptions: {
+    attempts: 5,
+    backoff: {
+      type: 'exponential',
+      delay: 5000,
+    },
+  },
+});
+const emailQueueEvents = new QueueEvents('emailQueue', {
+  connection: redisClient,
+});
+
+// Define the Notification Queue
+const notificationQueue = new Queue('notificationQueue', {
+  connection: redisClient,
+  defaultJobOptions: {
+    attempts: 5,
+    backoff: {
+      type: 'exponential',
+      delay: 5000,
+    },
+  },
+});
+const notificationQueueEvents = new QueueEvents('notificationQueue', {
+  connection: redisClient,
+});
+
+// Export the queues and their events
 export const queues = {
-  emailQueue: new Queue("emailQueue", { connection: redis }),
-  testimonialQueue: new Queue("testimonialQueue", { connection: redis }),
-  aiQueue: new Queue("aiQueue", { connection: redis }),
-  analyticsQueue: new Queue("analyticsQueue", { connection: redis }),
-  exportQueue: new Queue("exportQueue", { connection: redis }),
-  notificationQueue: new Queue("notificationQueue", { connection: redis }),
+  emailQueue,
+  emailQueueEvents,
+  notificationQueue,
+  notificationQueueEvents,
 };
 
-// Initialize queue events
-Object.keys(queues).forEach((queueName) => {
-  try {
-    const queueEvent = new QueueEvents(queueName, { connection: redis });
-    queues[`${queueName}Events`] = queueEvent;
-
-    queueEvent.on("completed", ({ jobId }) => {
-      logger.info(
-        `✅ Job ${jobId} in queue ${queueName} completed successfully.`
-      );
-    });
-
-    queueEvent.on("failed", ({ jobId, failedReason }) => {
-      logger.error(
-        `❌ Job ${jobId} in queue ${queueName} failed. Reason: ${failedReason}`
-      );
-    });
-
-    queueEvent.on("stalled", ({ jobId }) => {
-      logger.warn(`⚠️ Job ${jobId} in queue ${queueName} has stalled.`);
-    });
-
-    queueEvent.on("progress", ({ jobId, data }) => {
-      logger.info(`📈 Job ${jobId} in queue ${queueName} progress:`, data);
-    });
-
-    logger.info(
-      `✅ Queue and QueueEvents for ${queueName} initialized successfully`
-    );
-  } catch (error) {
-    logger.error(
-      `❌ Failed to initialize Queue and QueueEvents for ${queueName}:`,
-      error
-    );
-  }
+// Event Listeners for Email Queue
+emailQueueEvents.on('completed', ({ jobId }) => {
+  logger.info(`✅ Email job ${jobId} completed successfully.`);
 });
+
+emailQueueEvents.on('failed', ({ jobId, failedReason }) => {
+  logger.error(`❌ Email job ${jobId} failed. Reason: ${failedReason}`);
+});
+
+emailQueueEvents.on('stalled', ({ jobId }) => {
+  logger.warn(`⚠️ Email job ${jobId} has stalled.`);
+});
+
+// Event Listeners for Notification Queue
+notificationQueueEvents.on('completed', ({ jobId }) => {
+  logger.info(`✅ Notification job ${jobId} completed successfully.`);
+});
+
+notificationQueueEvents.on('failed', ({ jobId, failedReason }) => {
+  logger.error(`❌ Notification job ${jobId} failed. Reason: ${failedReason}`);
+});
+
+notificationQueueEvents.on('stalled', ({ jobId }) => {
+  logger.warn(`⚠️ Notification job ${jobId} has stalled.`);
+});
+
+// Graceful shutdown function
+export const shutdownQueues = async () => {
+  try {
+    logger.info('🔄 Shutting down queues...');
+    await emailQueueScheduler.close();
+    await notificationQueueScheduler.close();
+    await emailQueue.close();
+    await notificationQueue.close();
+    await emailQueueEvents.close();
+    await notificationQueueEvents.close();
+    logger.info('✅ Queues shut down successfully.');
+  } catch (error) {
+    logger.error('❌ Error shutting down queues:', error);
+  }
+};
+
+// Handle process termination signals
+process.on('SIGTERM', shutdownQueues);
+process.on('SIGINT', shutdownQueues);

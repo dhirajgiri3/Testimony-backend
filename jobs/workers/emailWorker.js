@@ -1,59 +1,61 @@
-import { Worker } from "bullmq";
-import {
-  sendVerificationEmail,
-  sendTestimonialRequestEmail,
-  sendPasswordResetEmail,
-} from "../../services/emailService.js";
-import { logger } from "../../utils/logger.js";
-import { redis } from "../../config/redis.js";
+// src/jobs/workers/emailWorker.js
 
+import { Worker } from 'bullmq';
+import { logger } from '../../utils/logger.js';
+import { sendEmail } from '../../config/email.js';
+import Handlebars from 'handlebars';
+import fs from 'fs';
+import path from 'path';
+import AppError from '../../utils/appError.js';
+
+// Precompile email templates
+const compileTemplate = (templateName, data) => {
+  const templatePath = path.join(
+    __dirname,
+    `../../utils/emailTemplates/${templateName}.hbs`
+  );
+  const templateSource = fs.readFileSync(templatePath, 'utf8');
+  const template = Handlebars.compile(templateSource);
+  return template(data);
+};
+
+// Define the Email Worker
 const emailWorker = new Worker(
-  "emailQueue",
+  'emailQueue',
   async (job) => {
-    const {
-      email,
-      subject,
-      html,
-      giverEmail,
-      link,
-      seekerName,
-      resetEmail,
-      resetUrl,
-      projectDetails,
-    } = job.data;
+    const { to, subject, template, data } = job.data;
 
     try {
-      switch (job.name) {
-        case "sendVerificationEmail":
-          await sendVerificationEmail(email, subject, html);
-          logger.info(`📧 Verification email sent to ${email}`);
-          break;
-        case "sendTestimonialRequestEmail":
-          await sendTestimonialRequestEmail(giverEmail, link, seekerName, projectDetails);
-          logger.info(`📧 Testimonial request email sent to ${giverEmail}`);
-          break;
-        case "sendPasswordResetEmail":
-          await sendPasswordResetEmail(resetEmail, resetUrl);
-          logger.info(`📧 Password reset email sent to ${resetEmail}`);
-          break;
-        default:
-          throw new Error(`Unknown email job type: ${job.name}`);
-      }
+      // Compile the email template with data
+      const html = compileTemplate(template, data);
+
+      // Send the email
+      await sendEmail({
+        to,
+        subject,
+        html,
+      });
+
+      logger.info(`📧 Email sent to ${to} with subject "${subject}"`);
     } catch (error) {
-      logger.error(`❌ Error processing email job ${job.id}: ${error.message}`);
-      throw error; // Ensure BullMQ handles retries
+      logger.error(`❌ Failed to send email to ${to}:`, error);
+      throw new AppError(`Failed to send email to ${to}`, 500);
     }
   },
-  { connection: redis, concurrency: 10 }
+  { connection: redisClient, concurrency: 10 }
 );
 
 // Event Listeners
-emailWorker.on("completed", (job) => {
+emailWorker.on('completed', (job) => {
   logger.info(`✅ Email job ${job.id} completed successfully.`);
 });
 
-emailWorker.on("failed", (job, err) => {
-  logger.error(`❌ Email job ${job.id} failed with error: ${err.message}`);
+emailWorker.on('failed', (job, err) => {
+  logger.error(`❌ Email job ${job.id} failed: ${err.message}`);
+});
+
+emailWorker.on('error', (err) => {
+  logger.error('❌ Email Worker encountered an error:', err);
 });
 
 export default emailWorker;

@@ -1,6 +1,6 @@
 // src/routes/api/v1/auth.js
 
-import express from "express";
+import express from 'express';
 import {
   register,
   verifyEmail,
@@ -13,26 +13,26 @@ import {
   forgotPassword,
   resetPasswordController,
   verifyTwoFactor,
-} from "../../../controllers/authController.js";
-import passport from "passport";
-import "../../../config/passport.js"; // Passport configuration file
-import { protect, authorize } from "../../../middlewares/auth.js";
+} from '../../../controllers/authController.js';
+import passport from 'passport';
+import '../../../config/passport.js'; // Passport configuration file
+import { protect, authorize } from '../../../middlewares/auth.js';
 import {
   passwordResetRateLimiter,
   emailResendRateLimiter,
   twoFactorRateLimiter,
-} from "../../../middlewares/rateLimiter.js";
+} from '../../../middlewares/rateLimiter.js';
 import validators, {
   createValidator,
   validateRequest,
-} from "../../../utils/validators.js";
-import { csrfProtection, attachCsrfToken } from "../../../middlewares/csrf.js";
+} from '../../../utils/validators.js';
+import { csrfProtection, attachCsrfToken } from '../../../middlewares/csrf.js';
 
 const router = express.Router();
 
 // Apply CSRF protection to state-changing routes
 router.post(
-  "/register",
+  '/register',
   csrfProtection,
   createValidator(validators.authValidators.register),
   validateRequest,
@@ -40,7 +40,7 @@ router.post(
 );
 
 router.post(
-  "/resend-verification",
+  '/resend-verification',
   csrfProtection,
   protect,
   emailResendRateLimiter,
@@ -50,7 +50,7 @@ router.post(
 );
 
 router.post(
-  "/login",
+  '/login',
   csrfProtection,
   createValidator(validators.authValidators.login),
   validateRequest,
@@ -58,7 +58,7 @@ router.post(
 );
 
 router.post(
-  "/verify-2fa",
+  '/verify-2fa',
   csrfProtection,
   protect,
   twoFactorRateLimiter, // Apply rate limiter
@@ -67,12 +67,12 @@ router.post(
   verifyTwoFactor
 );
 
-router.post("/refresh-token", csrfProtection, refreshTokenController);
+router.post('/refresh-token', csrfProtection, refreshTokenController);
 
-router.post("/logout", csrfProtection, protect, logout);
+router.post('/logout', csrfProtection, protect, logout);
 
 router.post(
-  "/send-otp",
+  '/send-otp',
   csrfProtection,
   protect,
   createValidator(validators.twoFactorValidation.sendOTP),
@@ -81,7 +81,7 @@ router.post(
 );
 
 router.post(
-  "/verify-otp",
+  '/verify-otp',
   csrfProtection,
   protect,
   createValidator(validators.twoFactorValidation.verifyOTP),
@@ -90,7 +90,7 @@ router.post(
 );
 
 router.post(
-  "/password-reset-request",
+  '/password-reset-request',
   csrfProtection,
   passwordResetRateLimiter,
   createValidator(validators.authValidators.forgotPassword),
@@ -99,7 +99,7 @@ router.post(
 );
 
 router.post(
-  "/reset-password",
+  '/reset-password',
   csrfProtection,
   passwordResetRateLimiter,
   createValidator(validators.authValidators.resetPassword),
@@ -108,27 +108,27 @@ router.post(
 );
 
 // Attach CSRF token to authentication routes
-router.get("/register", attachCsrfToken, (req, res) => {
+router.get('/register', attachCsrfToken, (req, res) => {
   res.json({ csrfToken: res.locals.csrfToken });
 });
 
-router.get("/login", attachCsrfToken, (req, res) => {
+router.get('/login', attachCsrfToken, (req, res) => {
   res.json({ csrfToken: res.locals.csrfToken });
 });
 
 // Google OAuth routes with state parameter for CSRF protection
-router.get("/google", csrfProtection, (req, res, next) => {
-  req.session.oauthState = crypto.randomBytes(16).toString("hex");
-  passport.authenticate("google", {
-    scope: ["profile", "email"],
+router.get('/google', csrfProtection, (req, res, next) => {
+  req.session.oauthState = crypto.randomBytes(16).toString('hex');
+  passport.authenticate('google', {
+    scope: ['profile', 'email'],
     state: req.session.oauthState,
   })(req, res, next);
 });
 
 router.get(
-  "/google/callback",
+  '/google/callback',
   csrfProtection,
-  passport.authenticate("google", {
+  passport.authenticate('google', {
     failureRedirect: `${process.env.CLIENT_URL}/login`,
     session: false,
   }),

@@ -1,210 +1,65 @@
-// src/app.js
+// app.js
 
-import express from "express";
-import dotenv from "dotenv";
-import cors from "cors";
-import helmet from "helmet";
-import hpp from "hpp";
-import xss from "xss-clean";
-import cookieParser from "cookie-parser";
-import passport from "passport";
-import morgan from "morgan";
-import compression from "compression";
-import apiRoutes from "./routes/api/v1/index.js";
-import { errorHandler, handleCsrfError } from "./middlewares/errorHandler.js";
-import AppError from "./utils/appError.js";
-import { v4 as uuidv4 } from "uuid";
-import "./config/passport.js"; // Passport configuration
-import session from "express-session";
-import {
-  emailVerificationRateLimiter,
-  emailResendRateLimiter,
-  profileUpdateRateLimiter,
-  tokenRefreshRateLimiter,
-  loginAttemptRateLimiter,
-  otpRequestRateLimiter,
-  passwordResetRateLimiter,
-} from "./middlewares/rateLimiter.js";
-import { requestLogger } from "./middlewares/logger.js";
-import rateLimit from "express-rate-limit";
-import mongoSanitize from "express-mongo-sanitize";
-import { csrfProtection } from "./middlewares/csrf.js";
-
-dotenv.config();
-
-// Validate required environment variables
-const requiredEnvVars = [
-  "JWT_ACCESS_SECRET",
-  "JWT_REFRESH_SECRET",
-  "MONGODB_URI",
-  "PORT",
-  "REDIS_HOST",
-  "REDIS_PORT",
-  "MAILTRAP_HOST",
-  "MAILTRAP_PORT",
-  "MAILTRAP_USER",
-  "MAILTRAP_PASS",
-  "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET",
-  "CLIENT_URL",
-  "SERVER_URL",
-  "NODE_ENV",
-  "FRONTEND_URL",
-];
-const validateEnvVars = () => {
-  requiredEnvVars.forEach((envVar) => {
-    if (!process.env[envVar]) {
-      console.error(`FATAL ERROR: ${envVar} is not defined.`);
-      process.exit(1);
-    }
-  });
-};
-
-// Call validation
-validateEnvVars();
+import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
+import passport from 'passport';
+import rateLimit from 'express-rate-limit';
+import { errorHandler } from './middlewares/errorHandler.js';
+import apiRoutes from './routes/api/v1/index.js';
+import { logger } from './utils/logger.js';
+import csrfProtection from './middlewares/csrfProtection.js';
+import applyCsrfProtection from './middlewares/csrf.js';
 
 const app = express();
 
-// Assign a unique request ID for every incoming request
-app.use((req, res, next) => {
-  req.id = uuidv4();
-  next();
-});
+// Validate Environment Variables
+import { validateEnvVars } from './utils/validation.js';
+import passportConfig from './config/passport.js';
+validateEnvVars();
 
-// Middleware Enhancements
-app.use(helmet()); // Set security HTTP headers
+// Passport Configuration
+passportConfig(passport);
+app.use(passport.initialize());
 
-// Content Security Policy (CSP) with better controls
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "trustedscripts.com"],
-      connectSrc: ["'self'", process.env.CLIENT_URL],
-      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
-      styleSrc: ["'self'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      objectSrc: ["'none'"],
-      upgradeInsecureRequests: [],
-    },
-  })
-);
-
-// Enable HSTS (HTTP Strict Transport Security) for 1 year
-app.use(
-  helmet.hsts({
-    maxAge: 31536000, // 1 year
-    includeSubDomains: true,
-  })
-);
-
-// CORS Configuration
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  "https://another-allowed-origin.com",
-];
+// Security Middlewares
+app.use(helmet());
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (allowedOrigins.includes(origin) || !origin) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
     credentials: true,
   })
 );
+app.use(cookieParser(process.env.COOKIE_SECRET));
 
-// Request Logging
-app.use(requestLogger);
-
-// Parse incoming requests
-app.use(express.json({ limit: "10kb" })); // Limit request body size
-app.use(express.urlencoded({ extended: true, limit: "10kb" })); // Limit URL-encoded request body size
-app.use(xss()); // Sanitize user input against XSS attacks
-app.use(hpp()); // Prevent HTTP Parameter Pollution
-app.use(cookieParser()); // Parse cookies
-app.use(compression()); // Compress responses with Gzip & Brotli
-
-// Rate Limiting for API requests
-app.use("/api/v1/email/verify", emailVerificationRateLimiter);
-app.use("/api/v1/email/resend", emailResendRateLimiter);
-app.use("/api/v1/profile/update", profileUpdateRateLimiter);
-app.use("/api/v1/token/refresh", tokenRefreshRateLimiter);
-app.use("/api/v1/login", loginAttemptRateLimiter);
-app.use("/api/v1/otp/request", otpRequestRateLimiter);
-app.use("/api/v1/password/reset", passwordResetRateLimiter);
-
-// General Rate Limiting
-const generalRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
-});
-app.use(generalRateLimiter);
-
-// Sanitize MongoDB queries
-app.use(mongoSanitize());
-
-// Logging
-if (process.env.NODE_ENV === "development") {
-  app.use(morgan("dev"));
+// Logger Middleware
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('dev'));
 } else {
-  app.use(
-    morgan("combined", {
-      stream: {
-        write: (message) => logger.info(message.trim()),
-      },
-    })
-  );
+  app.use(morgan('combined', { stream: logger.stream }));
 }
 
-// Initialize Passport for authentication
-app.use(
-  session({
-    secret: process.env.JWT_ACCESS_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
-    },
-  })
-);
-app.use(passport.initialize());
-app.use(passport.session());
+// Body Parsing
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Attach Request Logger
-app.use((req, res, next) => {
-  logger.info(
-    `🔍 Request ID: ${req.id} | ${req.method} ${req.url} | IP: ${req.ip} | User-Agent: ${req.headers["user-agent"]}`
-  );
-  next();
+// Rate Limiting
+const generalLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX) || 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
 });
+app.use('/api', generalLimiter);
 
-// Apply CSRF protection to all state-changing routes
-app.use((req, res, next) => {
-  if (["POST", "PUT", "DELETE"].includes(req.method)) {
-    csrfProtection(req, res, next);
-  } else {
-    next();
-  }
-});
+// CSRF Protection
+app.use(csrfProtection);
 
-// API Routes
-app.use("/api/v1", apiRoutes);
-
-// 404 handler for undefined routes
-app.all("*", (req, res, next) => {
-  next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
-});
-
-// CSRF error handler
-app.use(handleCsrfError);
+// Routes
+app.use('/api/v1', applyCsrfProtection(apiRoutes));
 
 // Error Handling Middleware
 app.use(errorHandler);
 
-export { app, validateEnvVars };
+export default app;

@@ -1,68 +1,78 @@
 // src/services/analyticsService.js
 
-import Analytics from "../models/Analytics.js";
-import Testimonial from "../models/Testimonial.js";
-import Goal from "../models/Goal.js";
-import User from "../models/User.js";
-import ActivityLog from "../models/ActivityLog.js"; // Added missing import
-import {queues} from "../jobs/queues.js";
-import { logger } from "../utils/logger.js";
-import { performSentimentAnalysis } from "./sentimentService.js";
-import { extractSkills } from "./skillExtractionService.js";
-import { forecastTestimonialsTrend } from "./forecastService.js";
-import { generateRecommendations } from "./recommendationService.js";
-import { updateIndustryTrends } from "./externalDataService.js";
-import AppError from '../utils/appError.js'; // Added AppError import
+import Analytics from '../models/Analytics.js';
+import Testimonial from '../models/Testimonial.js';
+import Goal from '../models/Goal.js';
+import User from '../models/User.js';
+import ActivityLog from '../models/ActivityLog.js';
+import { queues } from '../jobs/queues.js';
+import { logger } from '../utils/logger.js';
+import { performSentimentAnalysis } from './sentimentService.js';
+import { extractSkills } from './skillExtractionService.js';
+import { forecastTestimonialsTrend } from './forecastService.js';
+import { generateRecommendations } from './recommendationService.js';
+import { updateIndustryTrends } from './externalDataService.js';
+import AppError from '../utils/appError.js';
 
 /**
- * Modular function to process skills analytics
+ * Processes skills analytics for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Object>} Extracted skills data.
  */
 const processSkills = async (seekerId) => {
-  // Retrieve approved testimonials for the seeker
   const testimonials = await Testimonial.find({
     seeker: seekerId,
-    "givers.isApproved": true,
+    'givers.isApproved': true,
   }).lean();
 
-  // Extract skills using the external skill extraction service
-  const skills = await extractSkills(testimonials);
+  const skills = await extractSkills(
+    testimonials.map((t) => t.givers.testimonial)
+  );
   return skills;
 };
 
 /**
- * Modular function to process sentiment analytics
+ * Processes sentiment analytics for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @param {Date} sixMonthsAgo - Date six months prior.
+ * @returns {Promise<Object>} Sentiment analysis data.
  */
 const processSentiment = async (seekerId, sixMonthsAgo) => {
-  // Retrieve approved testimonials within the last six months
   const testimonials = await Testimonial.find({
     seeker: seekerId,
-    "givers.isApproved": true,
-    "givers.submittedAt": { $gte: sixMonthsAgo },
+    'givers.isApproved': true,
+    createdAt: { $gte: sixMonthsAgo },
   }).lean();
 
-  // Perform sentiment analysis using the external sentiment analysis service
-  const sentimentData = await performSentimentAnalysis(testimonials);
+  const sentimentData = await performSentimentAnalysis(
+    testimonials.map((t) => t.givers.testimonial)
+  );
   return sentimentData;
 };
 
 /**
- * Modular function to process emotion distribution
+ * Processes emotion distribution analytics for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Object>} Emotion distribution data.
  */
 const processEmotionDistribution = async (seekerId) => {
   const emotionAggregation = await Testimonial.aggregate([
-    { $match: { seeker: seekerId, "givers.isApproved": true } },
-    { $unwind: "$givers" },
+    { $match: { seeker: seekerId, 'givers.isApproved': true } },
+    { $unwind: '$givers' },
     {
       $match: {
-        "givers.isApproved": true,
-        "givers.emotionAnalysis": { $exists: true },
+        'givers.isApproved': true,
+        'givers.emotionAnalysis': { $exists: true },
       },
     },
-    { $unwind: { path: "$givers.emotionAnalysis" } },
+    { $unwind: '$givers.emotionAnalysis' },
     {
       $group: {
-        _id: "$givers.emotionAnalysis.k",
-        total: { $sum: "$givers.emotionAnalysis.v" },
+        _id: '$givers.emotionAnalysis.emotion',
+        total: { $sum: '$givers.emotionAnalysis.intensity' },
       },
     },
     { $sort: { total: -1 } },
@@ -77,21 +87,24 @@ const processEmotionDistribution = async (seekerId) => {
 };
 
 /**
- * Modular function to process project categories
+ * Processes project category analytics for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Array>} Array of project categories with counts.
  */
 const processProjectCategories = async (seekerId) => {
   const projectCategoryAggregation = await Testimonial.aggregate([
-    { $match: { seeker: seekerId, "givers.isApproved": true } },
-    { $unwind: "$givers" },
+    { $match: { seeker: seekerId, 'givers.isApproved': true } },
+    { $unwind: '$givers' },
     {
       $match: {
-        "givers.isApproved": true,
-        "givers.projectCategory": { $exists: true },
+        'givers.isApproved': true,
+        'givers.projectCategory': { $exists: true },
       },
     },
     {
       $group: {
-        _id: "$givers.projectCategory",
+        _id: '$givers.projectCategory',
         count: { $sum: 1 },
       },
     },
@@ -105,24 +118,27 @@ const processProjectCategories = async (seekerId) => {
 };
 
 /**
- * Modular function to process skill correlation
+ * Processes skill correlation analytics for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Array>} Array of skill correlations.
  */
 const processSkillCorrelation = async (seekerId) => {
   const skillCorrelationAggregation = await Testimonial.aggregate([
-    { $match: { seeker: seekerId, "givers.isApproved": true } },
-    { $unwind: "$givers" },
+    { $match: { seeker: seekerId, 'givers.isApproved': true } },
+    { $unwind: '$givers' },
     {
       $match: {
-        "givers.isApproved": true,
-        "givers.skills": { $exists: true, $ne: [] },
+        'givers.isApproved': true,
+        'givers.skills': { $exists: true, $ne: [] },
       },
     },
-    { $unwind: "$givers.skills" },
+    { $unwind: '$givers.skills' },
     {
       $group: {
-        _id: "$givers.skills",
-        relatedSkills: { $addToSet: "$givers.skills" },
-        averageSentiment: { $avg: "$givers.sentimentScore" },
+        _id: '$givers.skills.skill',
+        relatedSkills: { $addToSet: '$givers.skills.skill' },
+        averageSentiment: { $avg: '$givers.sentimentScore' },
       },
     },
   ]);
@@ -135,19 +151,26 @@ const processSkillCorrelation = async (seekerId) => {
 };
 
 /**
- * Modular function to process benchmarking
+ * Processes benchmarking analytics against industry standards.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @param {string} industry - Industry of the user.
+ * @returns {Promise<Object>} Benchmarking data.
  */
 const processBenchmarking = async (seekerId, industry) => {
   const industryAnalytics = await Testimonial.aggregate([
-    { $match: { "seeker.industry": industry, "givers.isApproved": true } },
-    { $unwind: "$givers" },
-    { $match: { "givers.isApproved": true } },
+    {
+      $match: {
+        'seeker.industry': industry,
+        'givers.isApproved': true,
+      },
+    },
     {
       $group: {
         _id: null,
-        averageSentiment: { $avg: "$givers.sentimentScore" },
-        averageTestimonialPerProject: {
-          $avg: { $strLenCP: "$givers.testimonial" },
+        averageSentiment: { $avg: '$givers.sentimentScore' },
+        averageTestimonialLength: {
+          $avg: { $strLenCP: '$givers.testimonial' },
         },
         totalTestimonials: { $sum: 1 },
       },
@@ -158,23 +181,23 @@ const processBenchmarking = async (seekerId, industry) => {
     averageSentiment: industryAnalytics[0]?.averageSentiment
       ? parseFloat(industryAnalytics[0].averageSentiment.toFixed(2))
       : 0,
-    averageTestimonialPerProject: industryAnalytics[0]
-      ?.averageTestimonialPerProject
-      ? parseFloat(
-          industryAnalytics[0].averageTestimonialPerProject.toFixed(2)
-        )
+    averageTestimonialLength: industryAnalytics[0]?.averageTestimonialLength
+      ? parseFloat(industryAnalytics[0].averageTestimonialLength.toFixed(2))
       : 0,
     totalTestimonials: industryAnalytics[0]?.totalTestimonials || 0,
   };
 };
 
 /**
- * Modular function to process goals
+ * Processes goal-related analytics for a seeker.
+ *
+ * @param {Array<Object>} goals - Array of goal documents.
+ * @returns {Object} Processed goals data.
  */
 const processGoalsData = (goals) => {
-  const activeGoals = goals.filter((goal) => goal.status === "active");
-  const completedGoals = goals.filter((goal) => goal.status === "completed");
-  const expiredGoals = goals.filter((goal) => goal.status === "expired");
+  const activeGoals = goals.filter((goal) => goal.status === 'active');
+  const completedGoals = goals.filter((goal) => goal.status === 'completed');
+  const expiredGoals = goals.filter((goal) => goal.status === 'expired');
 
   return {
     total: goals.length,
@@ -185,8 +208,9 @@ const processGoalsData = (goals) => {
 };
 
 /**
- * Update Analytics for a Seeker with enhanced processing and error handling
- * @param {string} seekerId - ID of the user
+ * Updates analytics for a seeker by aggregating various analytics components.
+ *
+ * @param {string} seekerId - ID of the user.
  */
 export const updateAnalytics = async (seekerId) => {
   try {
@@ -215,7 +239,7 @@ export const updateAnalytics = async (seekerId) => {
       benchmark,
       forecastData,
       externalTrends,
-      goals
+      goals,
     ] = await Promise.all([
       processSkills(seekerId),
       processSentiment(seekerId, sixMonthsAgo),
@@ -225,13 +249,16 @@ export const updateAnalytics = async (seekerId) => {
       processBenchmarking(seekerId, industry),
       forecastTestimonialsTrend(await getHistoricalData(seekerId)),
       updateIndustryTrends(seekerId, industry),
-      Goal.find({ user: seekerId }).lean()
+      Goal.find({ user: seekerId }).lean(),
     ]);
 
     // Recommendations Generation
     const recommendationData = {
       totalRequests: await Testimonial.countDocuments({ seeker: seekerId }),
-      totalTestimonials: await Testimonial.countDocuments({ seeker: seekerId, "givers.isApproved": true }),
+      totalTestimonials: await Testimonial.countDocuments({
+        seeker: seekerId,
+        'givers.isApproved': true,
+      }),
       skills,
       sentimentOverview: sentimentData.overview,
       emotionDistribution,
@@ -239,8 +266,13 @@ export const updateAnalytics = async (seekerId) => {
       forecast: { testimonialsTrend: forecastData },
       benchmark,
       comparison: {
-        sentimentAboveIndustry: sentimentData.overview.averageSentiment > benchmark.averageSentiment,
-        testimonialVolumeAboveIndustry: await Testimonial.countDocuments({ seeker: seekerId, "givers.isApproved": true }) > benchmark.totalTestimonials,
+        sentimentAboveIndustry:
+          sentimentData.overview.averageSentiment > benchmark.averageSentiment,
+        testimonialVolumeAboveIndustry:
+          (await Testimonial.countDocuments({
+            seeker: seekerId,
+            'givers.isApproved': true,
+          })) > benchmark.totalTestimonials,
       },
       goals: processGoalsData(goals),
     };
@@ -272,7 +304,7 @@ export const updateAnalytics = async (seekerId) => {
       .limit(10)
       .lean();
 
-    analytics.recentActivity = recentActivity.map(activity => ({
+    analytics.recentActivity = recentActivity.map((activity) => ({
       activity: activity.action,
       timestamp: activity.createdAt,
     }));
@@ -281,192 +313,107 @@ export const updateAnalytics = async (seekerId) => {
 
     logger.info(`✅ Analytics updated for seeker: ${seekerId}`);
   } catch (error) {
-    logger.error("❌ Error updating analytics:", {
+    logger.error('❌ Error updating analytics:', {
       seekerId,
       message: error.message,
-      stack: error.stack
+      stack: error.stack,
     });
     throw new AppError('Failed to update analytics', 500);
   }
 };
 
 /**
- * Enqueue Analytics Update Job
- * @param {string} seekerId - ID of the user
+ * Enqueues an analytics update job for a seeker.
+ *
+ * @param {string} seekerId - ID of the user.
  */
 export const enqueueAnalyticsUpdate = async (seekerId) => {
-  await queues.analyticsQueue.add(
-    "updateAnalytics",
-    { seekerId },
-    {
-      attempts: 3,
-      backoff: {
-        type: "exponential",
-        delay: 1000,
-      },
-    }
-  );
+  try {
+    await queues.analyticsQueue.add(
+      'updateAnalytics',
+      { seekerId },
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      }
+    );
+    logger.info(`Enqueued analytics update job for seeker: ${seekerId}`);
+  } catch (error) {
+    logger.error(
+      `❌ Failed to enqueue analytics update job for seeker: ${seekerId}`,
+      error
+    );
+    throw new AppError('Failed to enqueue analytics update job', 500);
+  }
 };
 
 /**
- * Get historical data for forecasting
- * @param {string} seekerId
- * @returns {Promise<Array>}
+ * Retrieves historical testimonial data for forecasting.
+ *
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Array<Object>>} Array of historical data points.
  */
 const getHistoricalData = async (seekerId) => {
   const historicalData = await Testimonial.aggregate([
     {
       $match: {
         seeker: seekerId,
-        "givers.isApproved": true
-      }
+        'givers.isApproved': true,
+      },
     },
     {
       $group: {
         _id: {
-          year: { $year: "$createdAt" },
-          month: { $month: "$createdAt" }
+          year: { $year: '$createdAt' },
+          month: { $month: '$createdAt' },
         },
-        count: { $sum: 1 }
-      }
+        count: { $sum: 1 },
+      },
     },
-    { $sort: { "_id.year": 1, "_id.month": 1 } }
+    { $sort: { '_id.year': 1, '_id.month': 1 } },
   ]);
 
-  return historicalData.map(item => ({
-    ds: new Date(item._id.year, item._id.month - 1, 1).toISOString().split('T')[0],
-    y: item.count
+  return historicalData.map((item) => ({
+    ds: new Date(item._id.year, item._id.month - 1, 1)
+      .toISOString()
+      .split('T')[0],
+    y: item.count,
   }));
 };
 
 /**
- * Fetches all testimonials for a seeker and uses OpenAI to produce advanced analytics.
- * This includes skill extraction, sentiment analysis, predictive insights, improvement suggestions, etc.
+ * Retrieves advanced analytics for a seeker.
  *
- * @param {string} seekerId - The seeker's user ID
- * @returns {Object} advancedInsights - Detailed AI-driven analytics
+ * @param {string} seekerId - ID of the user.
+ * @returns {Promise<Object>} Advanced analytics data.
  */
-export const getAnalytics = async (seekerId) => {
-  // Fetch all testimonials text
-  const testimonials = await Testimonial.find({
-    seeker: seekerId,
-    "givers.testimonial": { $exists: true, $ne: null },
-  })
-    .select(
-      "givers.testimonial givers.name givers.email projectDetails createdAt"
-    )
-    .lean();
-
-  if (!testimonials || testimonials.length === 0) {
-    // If no testimonials, return empty advanced insights
-    return {
-      skills: [],
-      sentimentAnalysis: {},
-      improvementSuggestions: [],
-      predictiveInsights: {},
-      benchmarking: {},
-      trendAnalysis: {},
-    };
-  }
-
-  // Aggregate testimonial texts
-  const testimonialTexts = testimonials.flatMap((t) =>
-    t.givers
-      .filter((g) => g.testimonial && g.isApproved)
-      .map((g) => ({
-        testimonial: g.testimonial,
-        projectDetails: t.projectDetails,
-        date: t.createdAt,
-      }))
-  );
-
-  if (testimonialTexts.length === 0) {
-    return {
-      skills: [],
-      sentimentAnalysis: {},
-      improvementSuggestions: [],
-      predictiveInsights: {},
-      benchmarking: {},
-      trendAnalysis: {},
-    };
-  }
-
-  const prompt = `
-You are an expert AI assistant that analyzes professional testimonials. 
-You will receive a series of testimonials (real or hypothetical) about a professional (the "Seeker"). 
-Your goal: Produce a JSON response with advanced analytics:
-
-Requirements for the JSON fields:
-- "skills": An array of objects { "skill": string, "mentions": number, "context": "why skill is valued" } extracted from testimonial text.
-- "sentimentAnalysis": Object with fields:
-   - "overallSentiment": "very positive", "positive", "mixed", "negative", etc.
-   - "emotions": array of objects { "emotion": "trust/confidence/praise/etc.", "intensity": 0-1 }
-   - "commonPraises": array of phrases frequently used
-   - "commonCriticisms": array of phrases or aspects needing improvement
-- "improvementSuggestions": array of strings, each is a recommendation to the Seeker on how to improve (based on criticisms or trends)
-- "predictiveInsights": object with:
-   - "futureDemandSkills": array of skill names that might be in higher demand soon
-   - "forecast": string describing expected testimonial trend if improvements are made
-- "benchmarking": object with:
-   - "industryComparison": a qualitative statement (e.g., "You rank above average in communication compared to peers")
-   - "topStrengthComparedToPeers": a skill or trait that is relatively stronger than average
-- "trendAnalysis": object showing how sentiments or skill mentions changed over time (just describe a trend if possible)
-
-Return ONLY the JSON object, without explanations.
-Make sure the JSON is valid.
-Here are the testimonials:
-
-${testimonialTexts.map((t, i) => `Testimonial #${i + 1} (Date: ${t.date.toISOString()}): "${t.testimonial}" [Project: ${t.projectDetails}]`).join("\n")}
-`;
-
+export const getAdvancedInsights = async (seekerId) => {
   try {
-    const response = await openai.createChatCompletion({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content: "You are a professional analytics assistant.",
-        },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
-    });
-
-    const content = response.data.choices[0].message.content.trim();
-
-    // Attempt to parse JSON
-    let advancedInsights;
-    try {
-      advancedInsights = JSON.parse(content);
-    } catch (jsonErr) {
-      logger.error(
-        "❌ Failed to parse AI response JSON, returning fallback structure.",
-        jsonErr
-      );
-      // Fallback if parsing fails
-      advancedInsights = {
-        skills: [],
-        sentimentAnalysis: {},
-        improvementSuggestions: [],
-        predictiveInsights: {},
-        benchmarking: {},
-        trendAnalysis: {},
-        parsingError: true,
-        rawResponse: content,
-      };
+    // Fetch seeker data
+    const seeker = await User.findById(seekerId).lean();
+    if (!seeker) {
+      throw new AppError('Seeker not found', 404);
     }
 
-    return advancedInsights;
+    const analytics = await Analytics.findOne({ seeker: seekerId }).lean();
+    if (!analytics) {
+      throw new AppError('Analytics data not found', 404);
+    }
+
+    return analytics;
   } catch (error) {
-    logger.error("❌ Error generating advanced analytics from OpenAI:", error);
-    return {
-      skills: [],
-      sentimentAnalysis: {},
-      improvementSuggestions: ["We encountered an error analyzing your data."],
-      predictiveInsights: {},
-      benchmarking: {},
-      trendAnalysis: {},
-      error: "AI analysis failed",
-    };
+    logger.error('❌ Get Advanced Insights Error:', error);
+    throw new AppError('Failed to retrieve advanced insights', 500);
   }
 };
+
+const analyticsService = {
+  updateAnalytics,
+  enqueueAnalyticsUpdate,
+  getAdvancedInsights,
+};
+
+export default analyticsService;

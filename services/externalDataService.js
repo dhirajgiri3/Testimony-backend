@@ -1,290 +1,205 @@
 import googleTrends from 'google-trends-api';
-import NodeCache from 'node-cache';
 import { logger } from '../utils/logger.js';
 import AppError from '../utils/appError.js';
+import { createCacheManager, cacheManager } from '../middlewares/cache.js';
 
-// Enhanced cache configuration
-const trendCache = new NodeCache({ 
-  stdTTL: 3600, // 1 hour cache
-  checkperiod: 120, // Check for expired keys every 2 minutes
-  maxKeys: 1000 // Maximum number of keys in cache
-});
-
-// Industry keywords mapping (keeping existing INDUSTRY_KEYWORDS object)
-const INDUSTRY_KEYWORDS = {
-  'Web Development': {
-    frontend: ['React', 'Vue.js', 'Angular', 'TypeScript', 'Svelte', 'Next.js', 'Tailwind CSS'],
-    backend: ['Node.js', 'Python Django', 'Ruby Rails', 'Spring Boot', 'FastAPI', 'Express.js'],
-    database: ['MongoDB', 'PostgreSQL', 'Redis', 'GraphQL', 'Prisma ORM'],
-    cloud: ['AWS Services', 'Google Cloud', 'Azure', 'Vercel', 'Netlify', 'Digital Ocean'],
-    devops: ['Docker', 'Kubernetes', 'Jenkins', 'GitHub Actions', 'GitLab CI', 'Terraform'],
-    testing: ['Jest', 'Cypress', 'Playwright', 'Selenium', 'Testing Library']
-  },
-
-  'Marketing': {
-    digital: ['SEO Strategy', 'Content Marketing', 'Email Marketing', 'Marketing Automation'],
-    social: ['Social Media Marketing', 'Instagram Marketing', 'TikTok Marketing', 'LinkedIn Marketing'],
-    advertising: ['Facebook Ads', 'Google Ads', 'Programmatic Advertising', 'Native Advertising'],
-    analytics: ['Google Analytics', 'Marketing Analytics', 'Attribution Modeling', 'Conversion Optimization'],
-    tools: ['HubSpot', 'Salesforce', 'Mailchimp', 'Semrush', 'Ahrefs', 'Google Tag Manager'],
-    content: ['Content Strategy', 'Video Marketing', 'Influencer Marketing', 'Podcast Marketing']
-  },
-
-  'Design': {
-    ui: ['UI Design', 'Design Systems', 'Mobile UI', 'Responsive Design', 'Material Design'],
-    ux: ['UX Research', 'User Testing', 'Information Architecture', 'Wireframing', 'Prototyping'],
-    tools: ['Figma', 'Adobe XD', 'Sketch', 'InVision', 'Principle', 'Framer'],
-    graphics: ['Adobe Creative Suite', 'Motion Design', 'Brand Design', 'Typography'],
-    emerging: ['AR Design', 'VR Design', '3D Design', 'Voice UI', 'Gesture Interfaces'],
-    methodology: ['Design Thinking', 'Agile Design', 'Design Sprint', 'Lean UX']
-  },
-
-  'Data Science': {
-    core: ['Machine Learning', 'Data Mining', 'Statistical Analysis', 'Deep Learning'],
-    languages: ['Python', 'R Programming', 'SQL', 'Julia', 'Scala'],
-    tools: ['TensorFlow', 'PyTorch', 'Scikit-learn', 'Pandas', 'NumPy'],
-    applications: ['NLP', 'Computer Vision', 'Predictive Analytics', 'Time Series Analysis'],
-    bigData: ['Spark', 'Hadoop', 'Databricks', 'Big Query', 'Snowflake'],
-    visualization: ['Tableau', 'Power BI', 'D3.js', 'Plotly', 'Seaborn']
-  },
-
-  'Product Management': {
-    core: ['Product Strategy', 'Product Roadmap', 'Product Analytics', 'Growth Hacking'],
-    tools: ['Jira', 'Confluence', 'Amplitude', 'Mixpanel', 'Product Board'],
-    methodology: ['Agile', 'Scrum', 'Lean Product', 'OKRs', 'Design Sprint'],
-    skills: ['Stakeholder Management', 'User Stories', 'Product Discovery', 'Go-to-Market'],
-    research: ['Market Research', 'User Research', 'Competitive Analysis', 'Customer Journey']
-  }
-};
+// Create a dedicated cache manager for Google Trends
+const trendsCache = createCacheManager('trends');
 
 /**
- * Enhanced Google Trends fetcher with retry mechanism
- * @param {Array<string>} keywords
- * @param {Object} options
- * @returns {Promise<Array>}
+ * Fetches Google Trends data with retry mechanism, input validation, and Redis caching.
+ * @param {Array<string>} keywords - List of keywords to fetch Google Trends data for.
+ * @param {Object} options - Options for trends API request.
+ * @param {string} [options.geo='global'] - Geographic region (default is 'global').
+ * @param {string} [options.timeRange='PAST_12_MONTHS'] - Time range for data (default is 'PAST_12_MONTHS').
+ * @param {string} [options.category=''] - Category filter for trends.
+ * @returns {Promise<Object>} - Formatted Google Trends data.
+ * @throws {AppError} - Throws error if request fails after retries.
  */
 export const fetchGoogleTrends = async (keywords, options = {}) => {
-  const MAX_RETRIES = 3;
-  const cacheKey = `trends_${keywords.sort().join('_')}_${options.geo || 'global'}`;
+  if (!Array.isArray(keywords) || keywords.length === 0) {
+    throw new AppError('Keywords must be a non-empty array', 400);
+  }
+
+  const MAX_RETRIES = parseInt(process.env.GT_MAX_RETRIES, 10) || 3;
+  const CACHE_TTL = parseInt(process.env.GT_CACHE_TTL, 10) || 3600; // Default 1 hour
+  const {
+    geo = 'global',
+    timeRange = 'PAST_12_MONTHS',
+    category = '',
+  } = options;
+
+  // Create a unique cache key based on input parameters
+  const sortedKeywords = [...keywords].sort();
+  const cacheKey = cacheManager.generateKey(
+    'trends',
+    sortedKeywords.join('_'),
+    geo,
+    timeRange,
+    category
+  );
 
   try {
-    // Check cache first
-    const cachedData = trendCache.get(cacheKey);
-    if (cachedData) {
-      logger.info('Cache hit for trends data', { keywords });
-      return cachedData;
-    }
+    // Attempt to get data from cache
+    return await trendsCache.getOrSet(
+      cacheKey,
+      async () => {
+        let lastError;
 
-    const {
-      timeRange = 'PAST_12_MONTHS',
-      geo = '',
-      category = ''
-    } = options;
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            logger.info(
+              `🔍 Attempt ${attempt} to fetch Google Trends for: ${sortedKeywords}`
+            );
 
-    let error;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      try {
-        const results = await googleTrends.interestOverTime({
-          keyword: keywords,
-          startTime: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000),
-          geo,
-          category
-        });
+            const results = await googleTrends.interestOverTime({
+              keyword: sortedKeywords,
+              startTime: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000), // Past 12 months
+              geo,
+              category,
+            });
 
-        const parsedResults = JSON.parse(results);
-        const formattedData = parsedResults.default.timelineData.map(item => ({
-          timestamp: new Date(item.time * 1000).toISOString(),
-          values: item.value,
-          keywords: keywords,
-          formattedTime: item.formattedTime,
-          formattedAxisTime: item.formattedAxisTime
-        }));
+            const parsedResults = JSON.parse(results);
+            const formattedData = parsedResults.default.timelineData.map(
+              (item) => ({
+                timestamp: new Date(item.time * 1000).toISOString(),
+                values: item.value,
+                keywords: sortedKeywords,
+                formattedTime: item.formattedTime,
+                formattedAxisTime: item.formattedAxisTime,
+              })
+            );
 
-        // Add metadata
-        const enhancedData = {
-          data: formattedData,
-          metadata: {
-            fetchedAt: new Date().toISOString(),
-            region: geo || 'global',
-            keywords: keywords,
-            timeRange
+            return {
+              data: formattedData,
+              metadata: {
+                fetchedAt: new Date().toISOString(),
+                region: geo,
+                keywords: sortedKeywords,
+                timeRange,
+                category,
+              },
+            };
+          } catch (error) {
+            lastError = error;
+            logger.warn(`❌ Attempt ${attempt} failed for fetchGoogleTrends`, {
+              error: error.message,
+              attempt,
+              keywords: sortedKeywords,
+              geo,
+              category,
+            });
+
+            // Exponential backoff before retrying
+            const backoff = attempt * 2000; // Exponential backoff
+            await new Promise((resolve) => setTimeout(resolve, backoff));
           }
-        };
+        }
 
-        trendCache.set(cacheKey, enhancedData);
-        return enhancedData;
-
-      } catch (e) {
-        error = e;
-        await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
-      }
-    }
-    throw error;
-
+        throw lastError;
+      },
+      CACHE_TTL
+    );
   } catch (error) {
-    logger.error('Error fetching Google Trends:', {
+    logger.error('❌ Error fetching Google Trends:', {
       error: error.message,
-      keywords,
-      options
+      keywords: sortedKeywords,
+      geo,
+      category,
+      timeRange,
     });
-    throw new AppError('Failed to fetch trend data', 500);
+    throw new AppError('Failed to fetch Google Trends data', 500);
   }
 };
 
 /**
- * Enhanced trends data analyzer
- * @param {Array} trendsData
- * @returns {Object}
+ * Fetches and analyzes industry trends.
+ * Uses Google Trends to analyze the popularity of industry-specific keywords.
+ * @param {string} industry - Industry name (e.g., "Web Development").
+ * @returns {Promise<Object>} - Processed trend analysis data.
+ * @throws {AppError} - Throws error if trends data is unavailable.
  */
-const analyzeTrendsData = (trendsData) => {
-  if (!trendsData?.length) return null;
+export const updateIndustryTrends = async (industry) => {
+  if (!industry) {
+    throw new AppError('Industry name is required', 400);
+  }
 
-  const analysis = {
-    overall: {
-      averages: {},
-      trends: {},
-      momentum: {},
-      volatility: {}
-    },
-    timeframes: {
-      recent: {},    // Last 30 days
-      historical: {} // Full period
-    },
-    rankings: {
-      byGrowth: [],
-      byVolume: []
-    }
-  };
+  const industryKeywords = getIndustryKeywords(industry);
+  if (!industryKeywords || industryKeywords.length === 0) {
+    throw new AppError(`No keywords defined for industry: ${industry}`, 400);
+  }
 
-  trendsData.forEach(trend => {
-    const keyword = trend.keywords[0];
-    const values = trend.values;
-
-    // Calculate statistics
-    const average = values.reduce((a, b) => a + b, 0) / values.length;
-    const trendChange = values[values.length - 1] - values[0];
-    const recentValues = values.slice(-30);
-    const momentum = recentValues.reduce((a, b) => a + b, 0) / recentValues.length;
-
-    // Calculate volatility
-    const volatility = Math.sqrt(
-      values.reduce((sum, val) => sum + Math.pow(val - average, 2), 0) / values.length
-    );
-
-    // Store calculations
-    analysis.overall.averages[keyword] = average;
-    analysis.overall.trends[keyword] = trend;
-    analysis.overall.momentum[keyword] = momentum;
-    analysis.overall.volatility[keyword] = volatility;
-
-    // Recent vs historical analysis
-    analysis.timeframes.recent[keyword] = {
-      average: momentum,
-      trend: recentValues[recentValues.length - 1] - recentValues[0]
-    };
-
-    analysis.timeframes.historical[keyword] = {
-      average,
-      trend
-    };
-  });
-
-  // Generate rankings
-  analysis.rankings.byGrowth = Object.entries(analysis.overall.trends)
-    .sort(([, a], [, b]) => b - a)
-    .map(([keyword, value]) => ({ keyword, growth: value }));
-
-  analysis.rankings.byVolume = Object.entries(analysis.overall.averages)
-    .sort(([, a], [, b]) => b - a)
-    .map(([keyword, value]) => ({ keyword, volume: value }));
-
-  return analysis;
-};
-
-/**
- * Enhanced Industry Trends updater
- * @param {string} seekerId
- * @param {string} industry
- * @returns {Promise<Object>}
- */
-export const updateIndustryTrends = async (seekerId, industry) => {
   try {
-    if (!INDUSTRY_KEYWORDS[industry]) {
-      throw new AppError(`Invalid industry: ${industry}`, 400);
-    }
+    const batchSize = 5;
+    const batchPromises = [];
 
-    const industryKeywords = Object.values(INDUSTRY_KEYWORDS[industry]).flat();
-    const trendsPromises = [];
-    const BATCH_SIZE = 5;
-    const DELAY_BETWEEN_BATCHES = 1000; // 1 second
-
-    // Process keywords in batches
-    for (let i = 0; i < industryKeywords.length; i += BATCH_SIZE) {
-      const batch = industryKeywords.slice(i, i + BATCH_SIZE);
-      trendsPromises.push(
-        fetchGoogleTrends(batch, {
-          timeRange: 'PAST_12_MONTHS',
-          geo: 'US'
-        })
+    for (let i = 0; i < industryKeywords.length; i += batchSize) {
+      const batch = industryKeywords.slice(i, i + batchSize);
+      batchPromises.push(
+        fetchGoogleTrends(batch, { geo: 'US', timeRange: 'PAST_12_MONTHS' })
       );
-      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
     }
 
-    const trendsResults = await Promise.all(trendsPromises);
-    const flattenedResults = trendsResults.flatMap(result => result.data);
+    const batchResults = await Promise.allSettled(batchPromises);
+    const successfulResults = batchResults
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value.data)
+      .flat();
 
-    // Analyze trends
-    const analysis = analyzeTrendsData(flattenedResults);
-
-    const response = {
+    return {
       industry,
       updatedAt: new Date().toISOString(),
-      rawData: flattenedResults,
-      analysis,
-      metadata: {
-        keywordCount: industryKeywords.length,
-        dataPoints: flattenedResults.length,
-        categories: Object.keys(INDUSTRY_KEYWORDS[industry]),
-        lastUpdated: new Date().toISOString(),
-        dataQuality: calculateDataQuality(flattenedResults)
-      }
+      trendsData: successfulResults,
+      keywordCount: industryKeywords.length,
     };
-
-    logger.info(`Updated industry trends for ${industry}`, {
-      seekerId,
-      keywordCount: industryKeywords.length
-    });
-
-    return response;
-
   } catch (error) {
-    logger.error(`Error updating industry trends:`, {
+    logger.error('❌ Error updating industry trends', {
       error: error.message,
-      seekerId,
       industry,
-      stack: error.stack
     });
-
-    if (error instanceof AppError) {
-      throw error;
-    }
     throw new AppError('Failed to update industry trends', 500);
   }
 };
 
 /**
- * Helper function to calculate data quality score
- * @param {Array} data
- * @returns {Object}
+ * Returns predefined industry-specific keywords.
+ * @param {string} industry - Name of the industry.
+ * @returns {Array<string>} - Array of keywords for the given industry.
  */
-function calculateDataQuality(data) {
-  const completeness = data.filter(item => item.values?.length > 0).length / data.length;
-  const hasNulls = data.some(item => item.values.includes(null));
-
-  return {
-    score: completeness * 100,
-    completeness: `${(completeness * 100).toFixed(2)}%`,
-    hasNulls,
-    sampleSize: data.length
+const getIndustryKeywords = (industry) => {
+  const INDUSTRY_KEYWORDS = {
+    'Web Development': ['React', 'Angular', 'Node.js', 'Vue.js', 'TypeScript'],
+    Marketing: ['SEO', 'Content Marketing', 'Social Media Marketing'],
+    Design: ['UI Design', 'UX Research', 'Figma', 'Sketch'],
+    'Data Science': [
+      'Machine Learning',
+      'Data Analysis',
+      'Python',
+      'TensorFlow',
+    ],
   };
-}
+
+  return INDUSTRY_KEYWORDS[industry] || [];
+};
+
+/**
+ * Invalidates cache for trends by specific industry or keyword.
+ * @param {string|Array<string>} keys - Cache keys to invalidate.
+ * @returns {Promise<void>}
+ */
+export const invalidateTrendCache = async (keys) => {
+  try {
+    if (!Array.isArray(keys)) keys = [keys];
+    await Promise.all(keys.map((key) => trendsCache.delete(key)));
+    logger.info(`✅ Cache invalidated for keys: ${keys.join(', ')}`);
+  } catch (error) {
+    logger.error('❌ Cache invalidation error:', error);
+  }
+};
+
+export default {
+  fetchGoogleTrends,
+  updateIndustryTrends,
+  getIndustryKeywords,
+  invalidateTrendCache,
+};

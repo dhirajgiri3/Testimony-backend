@@ -1,7 +1,7 @@
 // src/middlewares/csrf.js
 
-import csrf from "csurf";
-import { logger } from "../utils/logger.js";
+import csrf from 'csurf';
+import { logger } from '../utils/logger.js';
 
 /**
  * Configure CSRF protection middleware with secure defaults
@@ -9,19 +9,19 @@ import { logger } from "../utils/logger.js";
 const csrfProtection = csrf({
   cookie: {
     // Use secure cookies in production
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === 'production',
     // Restrict cookie to HTTP(S) only
     httpOnly: true,
     // Strict same-site policy
-    sameSite: "strict",
+    sameSite: 'strict',
     // Set cookie path
-    path: "/",
+    path: '/',
   },
   // Use double submit cookie pattern
-  ignoreMethods: ["GET", "HEAD", "OPTIONS"],
+  ignoreMethods: ['GET', 'HEAD', 'OPTIONS'],
   // Customize error handling
   value: (req) => {
-    return req.headers["x-csrf-token"] || req.body._csrf || req.query._csrf;
+    return req.headers['x-csrf-token'] || req.body._csrf || req.query._csrf;
   },
 });
 
@@ -37,15 +37,15 @@ const attachCsrfToken = (req, res, next) => {
  * Wrapper to handle CSRF errors gracefully
  */
 const handleCsrfError = (err, req, res, next) => {
-  if (err.code !== "EBADCSRFTOKEN") {
+  if (err.code !== 'EBADCSRFTOKEN') {
     return next(err);
   }
 
   logger.warn(`CSRF validation failed for request ID: ${req.id}`);
 
   res.status(403).json({
-    status: "fail",
-    message: "Invalid CSRF token",
+    status: 'fail',
+    message: 'Invalid CSRF token',
   });
 };
 

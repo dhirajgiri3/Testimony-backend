@@ -10,16 +10,23 @@ const router = express.Router();
  * @desc    Generate personalized recommendations for a seeker
  * @access  Protected
  */
-router.post('/generate/:seekerId', protect, authorize('seeker'), async (req, res, next) => {
-  try {
-    const recommendations = await generateRecommendations(req.params.seekerId);
-    res.status(200).json({
-      success: true,
-      data: recommendations,
-    });
-  } catch (error) {
-    next(error);
+router.post(
+  '/generate/:seekerId',
+  protect,
+  authorize('seeker'),
+  async (req, res, next) => {
+    try {
+      const recommendations = await generateRecommendations(
+        req.params.seekerId
+      );
+      res.status(200).json({
+        success: true,
+        data: recommendations,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 export default router;

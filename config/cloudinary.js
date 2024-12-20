@@ -1,44 +1,26 @@
-import { v2 as cloudinary } from "cloudinary";
-import dotenv from "dotenv";
-import { logger } from "../utils/logger.js";
+// cloudinary.js
 
-dotenv.config();
+import { v2 as cloudinary } from 'cloudinary';
+import { logger } from '../utils/logger.js';
 
-// ✅ Correct Cloudinary configuration
+// Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// ✅ Use `cloudinary.api.ping()` to verify connection (not cloudinary.verify())
-cloudinary.api
-  .ping()
-  .then(() => {
-    logger.info("✅ Cloudinary Configured and Verified Successfully");
-  })
-  .catch((error) => {
-    logger.error("❌ Cloudinary Configuration Error:", error);
-    process.exit(1); // Terminate the app if Cloudinary is not configured correctly
-  });
-
-// ✅ Upload file to Cloudinary using `uploader.upload_stream`
-export const uploadToCloudinary = (buffer) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      { resource_type: "auto" }, // Automatically determine the file type (image, video, etc.)
-      (error, result) => {
-        if (error) {
-          logger.error("❌ Cloudinary Upload Error:", error);
-          reject(error);
-        } else {
-          logger.info("✅ Cloudinary Upload Successful:", result.secure_url);
-          resolve(result.secure_url);
-        }
-      }
-    );
-    stream.end(buffer); // Stream ends after uploading the buffer
-  });
+// Test Cloudinary Connection
+const testCloudinaryConnection = async () => {
+  try {
+    const result = await cloudinary.api.resources({ max_results: 1 });
+    if (result.total_count >= 0) {
+      logger.info('✅ Connected to Cloudinary successfully.');
+    }
+  } catch (error) {
+    logger.error('❌ Cloudinary connection error:', error);
+    throw new Error('Cloudinary configuration failed.');
+  }
 };
 
-export default cloudinary;
+export { cloudinary, testCloudinaryConnection };

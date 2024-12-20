@@ -1,49 +1,63 @@
 // src/jobs/workers/testimonialWorker.js
 
-import { Worker } from "bullmq";
-import {queues} from "../queues.js";
-import { 
-  processTestimonialSubmission, 
-  approveTestimonial, 
-  rejectTestimonial, 
+import { Worker } from 'bullmq';
+import { queues } from '../queues.js';
+import {
+  processTestimonialSubmission,
+  approveTestimonial,
+  rejectTestimonial,
   shareTestimonial,
   reportTestimonial,
   archiveTestimonial,
-  restoreTestimonial 
-} from "../../services/testimonialService.js";
-import { logger } from "../../utils/logger.js";
-import {redis} from "../../config/redis.js";
+  restoreTestimonial,
+} from '../../services/testimonialService.js';
+import { logger } from '../../utils/logger.js';
+import { redis } from '../../config/redis.js';
 
 const testimonialWorker = new Worker(
-  "testimonialQueue",
+  'testimonialQueue',
   async (job) => {
     try {
       switch (job.name) {
-        case "processTestimonial":
+        case 'processTestimonial':
           await processTestimonialSubmission(job.data);
           logger.info(`📝 Testimonial processed for job: ${job.id}`);
           break;
-        case "approveTestimonial":
-          await approveTestimonial(job.data.testimonialId, job.data.giverId, job.data.adminId, job.data.comments);
+        case 'approveTestimonial':
+          await approveTestimonial(
+            job.data.testimonialId,
+            job.data.giverId,
+            job.data.adminId,
+            job.data.comments
+          );
           logger.info(`✅ Testimonial approved for job: ${job.id}`);
           break;
-        case "rejectTestimonial":
-          await rejectTestimonial(job.data.testimonialId, job.data.giverId, job.data.adminId, job.data.comments);
+        case 'rejectTestimonial':
+          await rejectTestimonial(
+            job.data.testimonialId,
+            job.data.giverId,
+            job.data.adminId,
+            job.data.comments
+          );
           logger.info(`❌ Testimonial rejected for job: ${job.id}`);
           break;
-        case "shareTestimonial":
-          await shareTestimonial(job.data.testimonialId, job.data.platform, job.data.options);
+        case 'shareTestimonial':
+          await shareTestimonial(
+            job.data.testimonialId,
+            job.data.platform,
+            job.data.options
+          );
           logger.info(`📤 Testimonial shared for job: ${job.id}`);
           break;
-        case "reportTestimonial":
+        case 'reportTestimonial':
           await reportTestimonial(job.data.testimonialId, job.data.reportData);
           logger.info(`📌 Testimonial reported for job: ${job.id}`);
           break;
-        case "archiveTestimonial":
+        case 'archiveTestimonial':
           await archiveTestimonial(job.data.testimonialId, job.data.options);
           logger.info(`🗄️ Testimonial archived for job: ${job.id}`);
           break;
-        case "restoreTestimonial":
+        case 'restoreTestimonial':
           await restoreTestimonial(job.data.testimonialId, job.data.userId);
           logger.info(`🔄 Testimonial restored for job: ${job.id}`);
           break;
@@ -59,18 +73,18 @@ const testimonialWorker = new Worker(
 );
 
 // Event Listeners
-testimonialWorker.on("completed", (job) => {
+testimonialWorker.on('completed', (job) => {
   logger.info(`✅ Testimonial job ${job.id} completed successfully.`);
 });
 
-testimonialWorker.on("failed", (job, err) => {
+testimonialWorker.on('failed', (job, err) => {
   logger.error(
     `❌ Testimonial job ${job.id} failed with error: ${err.message}`
   );
 });
 
 // Gracefully handle unexpected errors
-testimonialWorker.on("error", (error) => {
+testimonialWorker.on('error', (error) => {
   logger.error(`❌ Testimonial Worker encountered an error: ${error.message}`);
 });
 

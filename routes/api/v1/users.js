@@ -1,4 +1,4 @@
-import express from "express";
+import express from 'express';
 import {
   getUserProfile,
   updatePreferences,
@@ -10,17 +10,17 @@ import {
   enable2FA,
   disable2FA,
   uploadProfilePic,
-} from "../../../controllers/userController.js";
-import { protect } from "../../../middlewares/auth.js";
-import { validateRequest } from "../../../middlewares/validate.js";
-import { sanitizeBody } from "../../../middlewares/sanitize.js";
+} from '../../../controllers/userController.js';
+import { protect } from '../../../middlewares/auth.js';
+import { validateRequest } from '../../../middlewares/validate.js';
+import { sanitizeBody } from '../../../middlewares/sanitize.js';
 import {
   profileUpdateRateLimiter,
   emailVerificationRateLimiter,
   loginRateLimiter,
-} from "../../../middlewares/rateLimiter.js";
-import { cache } from "../../../middlewares/cache.js";
-import { upload } from "../../../middlewares/upload.js"; // Middleware for file uploads
+} from '../../../middlewares/rateLimiter.js';
+import { cache } from '../../../middlewares/cache.js';
+import { upload } from '../../../middlewares/upload.js'; // Middleware for file uploads
 import {
   passwordResetValidation,
   twoFactorValidation,
@@ -28,28 +28,31 @@ import {
   updatePreferencesValidation,
   updateSettingsValidation,
   createValidator,
-} from "../../../utils/validators.js";
+} from '../../../utils/validators.js';
 import {
   getNotifications,
   markAsRead,
   deleteNotificationHandler,
-} from "../../../controllers/notificationController.js";
+} from '../../../controllers/notificationController.js';
 import {
   disableTwoFactorAuth,
   enableTwoFactorAuth,
   setupTwoFactorAuth,
-} from "../../../services/twoFactorService.js";
-import { performPasswordReset, updateUserProfile } from "../../../services/userService.js";
+} from '../../../services/twoFactorService.js';
+import {
+  performPasswordReset,
+  updateUserProfile,
+} from '../../../services/userService.js';
 
 const router = express.Router();
 
 // Get current user
-router.get("/me", protect, cache("user_me", 300), getMe);
+router.get('/me', protect, cache('user_me', 300), getMe);
 
 // Profile routes
-router.get("/profile", protect, cache("user_profile", 300), getUserProfile);
+router.get('/profile', protect, cache('user_profile', 300), getUserProfile);
 router.put(
-  "/profile",
+  '/profile',
   protect,
   profileUpdateRateLimiter,
   sanitizeBody,
@@ -60,7 +63,7 @@ router.put(
 
 // Preferences routes
 router.put(
-  "/preferences",
+  '/preferences',
   protect,
   profileUpdateRateLimiter,
   sanitizeBody,
@@ -71,7 +74,7 @@ router.put(
 
 // Settings routes
 router.put(
-  "/settings",
+  '/settings',
   protect,
   profileUpdateRateLimiter,
   sanitizeBody,
@@ -81,21 +84,21 @@ router.put(
 );
 
 // Account management routes
-router.delete("/account", protect, emailVerificationRateLimiter, deleteAccount);
+router.delete('/account', protect, emailVerificationRateLimiter, deleteAccount);
 
 // Export user data
-router.get("/export-data", protect, exportData);
+router.get('/export-data', protect, exportData);
 
 // Password reset routes
 router.post(
-  "/forgot-password",
+  '/forgot-password',
   sanitizeBody,
   createValidator(passwordResetValidation.requestReset),
   validateRequest,
   forgotPassword
 );
 router.post(
-  "/reset-password",
+  '/reset-password',
   sanitizeBody,
   createValidator(passwordResetValidation.resetPassword),
   validateRequest,
@@ -104,7 +107,7 @@ router.post(
 
 // Two-Factor Authentication routes
 router.post(
-  "/enable-2fa",
+  '/enable-2fa',
   protect,
   sanitizeBody,
   createValidator(twoFactorValidation.setup),
@@ -112,7 +115,7 @@ router.post(
   enable2FA
 );
 router.post(
-  "/disable-2fa",
+  '/disable-2fa',
   protect,
   sanitizeBody,
   createValidator(twoFactorValidation.disable),
@@ -122,24 +125,24 @@ router.post(
 
 // Profile picture upload route
 router.post(
-  "/upload-profile-picture",
+  '/upload-profile-picture',
   protect,
-  upload.single("profilePicture"),
+  upload.single('profilePicture'),
   uploadProfilePic
 );
 
 // Notification routes
-router.get("/notifications", protect, getNotifications);
+router.get('/notifications', protect, getNotifications);
 
-router.patch("/notifications/:id/read", protect, markAsRead);
+router.patch('/notifications/:id/read', protect, markAsRead);
 
-router.delete("/notifications/:id", protect, deleteNotificationHandler);
+router.delete('/notifications/:id', protect, deleteNotificationHandler);
 
 // Two-Factor Setup routes
-router.post("/two-factor/setup", protect, setupTwoFactorAuth);
+router.post('/two-factor/setup', protect, setupTwoFactorAuth);
 
 router.post(
-  "/two-factor/enable",
+  '/two-factor/enable',
   protect,
   createValidator(twoFactorValidation.enable),
   validateRequest,
@@ -147,7 +150,7 @@ router.post(
 );
 
 router.post(
-  "/two-factor/disable",
+  '/two-factor/disable',
   protect,
   createValidator(twoFactorValidation.disable),
   validateRequest,

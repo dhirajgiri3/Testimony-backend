@@ -1,8 +1,8 @@
-import { Worker } from "bullmq";
-import { generateAITestimonial } from "../../services/aiService.js";
-import { logger } from "../../utils/logger.js";
-import {redis} from "../../config/redis.js";
-import {queues} from "../queues.js";
+import { Worker } from 'bullmq';
+import { generateAITestimonial } from '../../services/aiService.js';
+import { logger } from '../../utils/logger.js';
+import { redis } from '../../config/redis.js';
+import { queues } from '../queues.js';
 
 // Worker configuration constants
 const WORKER_CONFIG = {
@@ -22,9 +22,9 @@ const WORKER_CONFIG = {
 };
 
 const aiWorker = new Worker(
-  "aiQueue",
+  'aiQueue',
   async (job) => {
-    const { projectDetails, userId, priority = "normal" } = job.data;
+    const { projectDetails, userId, priority = 'normal' } = job.data;
 
     if (!projectDetails || !userId) {
       throw new Error(
@@ -47,19 +47,19 @@ const aiWorker = new Worker(
 
       // Enqueue notification job
       await queues.notificationQueue.add(
-        "sendInAppNotification",
+        'sendInAppNotification',
         {
           userId,
-          message: "Your AI-generated testimonial is ready.",
+          message: 'Your AI-generated testimonial is ready.',
           testimonial: aiTestimonial,
         },
-        { priority: priority === "high" ? 1 : 2 }
+        { priority: priority === 'high' ? 1 : 2 }
       );
 
       // Trigger analytics update if high priority
-      if (priority === "high") {
+      if (priority === 'high') {
         await queues.analyticsQueue.add(
-          "updateAnalytics",
+          'updateAnalytics',
           { seekerId: userId },
           { priority: 2 }
         );
@@ -78,9 +78,9 @@ const aiWorker = new Worker(
       // Notify admin for critical errors
       if (job.attemptsMade >= 2) {
         await queues.notificationQueue.add(
-          "sendAdminAlert",
+          'sendAdminAlert',
           {
-            type: "AI_GENERATION_FAILURE",
+            type: 'AI_GENERATION_FAILURE',
             jobId: job.id,
             userId,
             error: error.message,
@@ -97,14 +97,14 @@ const aiWorker = new Worker(
 
 // Enhanced Event Listeners
 aiWorker
-  .on("completed", (job, result) => {
+  .on('completed', (job, result) => {
     logger.info(`✅ AI job ${job.id} completed successfully.`, {
       jobId: job.id,
       userId: job.data.userId,
       result,
     });
   })
-  .on("failed", (job, err) => {
+  .on('failed', (job, err) => {
     logger.error(`❌ AI job ${job.id} failed with error: ${err.message}`, {
       jobId: job.id,
       userId: job.data.userId,
@@ -112,7 +112,7 @@ aiWorker
       error: err.stack,
     });
   })
-  .on("error", (err) => {
+  .on('error', (err) => {
     logger.error(`Worker error: ${err.message}`, { error: err.stack });
   });
 

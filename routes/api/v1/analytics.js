@@ -1,7 +1,10 @@
 // src/routes/api/v1/analytics.js
 
 import express from 'express';
-import { getAnalytics, enqueueAnalyticsUpdate } from '../../../services/analyticsService.js';
+import {
+  getAnalytics,
+  enqueueAnalyticsUpdate,
+} from '../../../services/analyticsService.js';
 import { protect } from '../../../middlewares/auth.js';
 
 const router = express.Router();

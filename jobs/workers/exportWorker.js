@@ -1,11 +1,11 @@
-import { Worker } from "bullmq";
-import { exportUserData } from "../../services/userService.js";
-import { logger } from "../../utils/logger.js";
-import {redis} from "../../config/redis.js";
-import { sendDataToUrl } from "../../utils/dataSender.js";
+import { Worker } from 'bullmq';
+import { exportUserData } from '../../services/userService.js';
+import { logger } from '../../utils/logger.js';
+import { redis } from '../../config/redis.js';
+import { sendDataToUrl } from '../../utils/dataSender.js';
 
 const exportWorker = new Worker(
-  "exportQueue",
+  'exportQueue',
   async (job) => {
     const { userId, callbackUrl } = job.data;
     if (!userId) {
@@ -33,11 +33,11 @@ const exportWorker = new Worker(
 );
 
 // Event Listeners
-exportWorker.on("completed", (job) => {
+exportWorker.on('completed', (job) => {
   logger.info(`✅ Export job ${job.id} completed successfully.`);
 });
 
-exportWorker.on("failed", (job, err) => {
+exportWorker.on('failed', (job, err) => {
   logger.error(`❌ Export job ${job.id} failed with error: ${err.message}`);
 });
 

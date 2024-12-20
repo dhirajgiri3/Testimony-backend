@@ -3,17 +3,18 @@
 import express from 'express';
 import { protect } from '../../../middlewares/auth.js';
 import { authorize } from '../../../middlewares/role.js';
-import { getSkills, addSkill, updateSkill, deleteSkill, getSkillInsights } from '../../../controllers/skillsController.js';
+import {
+  getSkills,
+  addSkill,
+  updateSkill,
+  deleteSkill,
+  getSkillInsights,
+} from '../../../controllers/skillsController.js';
 
 const router = express.Router();
 
 // Get Skill Insights
-router.get(
-  '/insights',
-  protect,
-  authorize('seeker'),
-  getSkillInsights
-);
+router.get('/insights', protect, authorize('seeker'), getSkillInsights);
 
 /**
  * @route   GET /api/v1/skills/seeker/:seekerId

@@ -8,11 +8,6 @@ import { authorize } from '../../../middlewares/role.js';
 const router = express.Router();
 
 // Get Recommendations
-router.get(
-  '/',
-  protect,
-  authorize('seeker'),
-  getRecommendations
-);
+router.get('/', protect, authorize('seeker'), getRecommendations);
 
 export default router;

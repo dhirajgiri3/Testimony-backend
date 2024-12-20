@@ -1,77 +1,103 @@
 // src/services/tokenService.js
 
-import jwt from "jsonwebtoken";
-import { v4 as uuidv4 } from "uuid";
-import { redis } from "../config/redis.js";
-import { logger } from "../utils/logger.js";
-import AppError from "../utils/appError.js";
-import User from "../models/User.js"; // Ensure User model is imported
+import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
+import { redisClient } from '../config/redis.js';
+import { logger } from '../utils/logger.js';
+import AppError from '../utils/appError.js';
+import User from '../models/User.js';
+import tokenBlacklistService from './tokenBlacklistService.js';
 
+/**
+ * Sign a JWT token with a unique identifier.
+ *
+ * @param {Object} payload - Payload to include in the token.
+ * @param {string} secret - Secret key for signing.
+ * @param {Object} options - Additional JWT options.
+ * @returns {string} - Signed JWT token.
+ */
 const signJwt = (payload, secret, options) => {
   return jwt.sign(payload, secret, { ...options, jwtid: uuidv4() });
 };
 
+/**
+ * Verify a JWT token.
+ *
+ * @param {string} token - JWT token to verify.
+ * @param {string} secret - Secret key for verification.
+ * @returns {Object} - Decoded token payload.
+ * @throws {Error} - If verification fails.
+ */
 const verifyJwt = (token, secret) => {
   return jwt.verify(token, secret);
 };
 
 /**
- * Generate Access Token
- * @param {Object} user - User object
- * @returns {string} JWT Access Token
+ * Generate an access token for a user.
+ *
+ * @param {Object} user - User object.
+ * @returns {string} - JWT access token.
  */
 export const generateAccessToken = (user) => {
   const payload = {
     id: user._id,
     role: user.role,
   };
-  return signJwt(payload, process.env.JWT_ACCESS_SECRET, { expiresIn: "15m" });
+  return signJwt(payload, process.env.JWT_ACCESS_SECRET, { expiresIn: '15m' });
 };
 
 /**
- * Generate Refresh Token
- * @param {Object} user - User object
- * @returns {string} JWT Refresh Token
+ * Generate a refresh token for a user.
+ *
+ * @param {Object} user - User object.
+ * @returns {string} - JWT refresh token.
  */
 export const generateRefreshToken = (user) => {
   const payload = {
     id: user._id,
     tokenVersion: user.tokenVersion,
   };
-  return signJwt(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
+  return signJwt(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: '7d' });
 };
 
 /**
- * Verify and Decode Token
- * @param {string} token - JWT token
- * @param {string} secret - Secret key
- * @param {string} type - 'access' or 'refresh'
- * @returns {Object} Decoded token
+ * Verify and decode a token, checking if it's blacklisted.
+ *
+ * @param {string} token - JWT token to verify.
+ * @param {string} secret - Secret key for verification.
+ * @param {string} type - Type of token ('access' or 'refresh').
+ * @returns {Object} - Decoded token payload.
+ * @throws {AppError} - If verification fails or token is blacklisted.
  */
 export const verifyAndCheckToken = async (token, secret, type) => {
   try {
     const decoded = verifyJwt(token, secret);
     const jti = decoded.jti;
 
-    if (await isTokenBlacklisted(jti)) {
-      throw new AppError(`Token has been revoked`, 401);
+    if (!jti) {
+      throw new AppError('Token missing jti.', 401);
+    }
+
+    const isBlacklisted = await tokenBlacklistService.isTokenBlacklisted(jti);
+    if (isBlacklisted) {
+      throw new AppError('Token has been revoked.', 401);
     }
 
     return decoded;
   } catch (error) {
-    logger.error(
-      `Token verification failed for ${type} token: ${error.message}`
-    );
-    throw new AppError(`Invalid ${type} token`, 401);
+    logger.error(`Token verification failed for ${type} token:`, error.message);
+    throw new AppError(`Invalid ${type} token.`, 401);
   }
 };
 
 /**
- * Rotate Refresh Token
- * @param {Object} user - User object
- * @param {string} oldRefreshToken - Old Refresh Token
- * @param {boolean} blacklistOldToken - Whether to blacklist the old refresh token
- * @returns {string} New Refresh Token
+ * Rotate refresh token, optionally blacklisting the old one.
+ *
+ * @param {Object} user - User object.
+ * @param {string|null} oldRefreshToken - The old refresh token to blacklist.
+ * @param {boolean} blacklistOldToken - Whether to blacklist the old token.
+ * @returns {Promise<string>} - New refresh token.
+ * @throws {AppError} - If rotation fails.
  */
 export const rotateRefreshToken = async (
   user,
@@ -79,11 +105,20 @@ export const rotateRefreshToken = async (
   blacklistOldToken = false
 ) => {
   if (blacklistOldToken && oldRefreshToken) {
-    const decodedOld = verifyJwt(
-      oldRefreshToken,
-      process.env.JWT_REFRESH_SECRET
-    );
-    await blacklistToken(decodedOld.jti, 7 * 24 * 60 * 60); // 7 days in seconds
+    try {
+      const decodedOld = jwt.verify(oldRefreshToken, process.env.JWT_REFRESH_SECRET);
+      if (decodedOld && decodedOld.jti) {
+        await tokenBlacklistService.blacklistToken(
+          decodedOld.jti,
+          7 * 24 * 60 * 60
+        ); // 7 days
+      } else {
+        throw new Error('Invalid token structure.');
+      }
+    } catch (error) {
+      logger.error('Failed to blacklist old refresh token:', error.message);
+      throw new AppError('Failed to rotate refresh token.', 500);
+    }
   }
 
   // Increment token version to invalidate existing refresh tokens
@@ -95,56 +130,27 @@ export const rotateRefreshToken = async (
 };
 
 /**
- * Blacklist a token by storing its jti in Redis
- * @param {string} jti - JWT ID of the token to blacklist
- * @param {number} expiresIn - Token expiration time in seconds
- */
-export const blacklistToken = async (jti, expiresIn) => {
-  try {
-    await redis.set(`blacklist:${jti}`, "true", "EX", expiresIn);
-    logger.info(`✅ Token blacklisted: ${jti}`);
-  } catch (error) {
-    logger.error(`❌ Error blacklisting token: ${error.message}`);
-    throw new AppError("Failed to blacklist token", 500);
-  }
-};
-
-/**
- * Check if a token is blacklisted
- * @param {string} jti - JWT ID of the token to check
- * @returns {boolean} Whether the token is blacklisted
- */
-export const isTokenBlacklisted = async (jti) => {
-  try {
-    const result = await redis.get(`blacklist:${jti}`);
-    return result === "true";
-  } catch (error) {
-    logger.error(`❌ Error checking token blacklist: ${error.message}`);
-    // To prevent unauthorized access due to Redis failure, default to not blacklisted
-    return false;
-  }
-};
-
-/**
- * Refresh Access Token using Refresh Token
- * @param {string} refreshToken - JWT Refresh Token
- * @returns {Object} New Access Token and Refresh Token
+ * Refresh tokens using a valid refresh token.
+ *
+ * @param {string} refreshToken - JWT refresh token.
+ * @returns {Promise<Object>} - New access and refresh tokens.
+ * @throws {AppError} - If refresh fails.
  */
 export const refreshTokens = async (refreshToken) => {
   try {
     const decoded = await verifyAndCheckToken(
       refreshToken,
       process.env.JWT_REFRESH_SECRET,
-      "refresh"
+      'refresh'
     );
-    const user = await User.findById(decoded.id);
 
+    const user = await User.findById(decoded.id);
     if (!user) {
-      throw new AppError("User not found", 401);
+      throw new AppError('User not found.', 401);
     }
 
     if (decoded.tokenVersion !== user.tokenVersion) {
-      throw new AppError("Token has been revoked", 401);
+      throw new AppError('Refresh token has been revoked.', 401);
     }
 
     const newAccessToken = generateAccessToken(user);
@@ -152,39 +158,40 @@ export const refreshTokens = async (refreshToken) => {
 
     return { accessToken: newAccessToken, refreshToken: newRefreshToken };
   } catch (error) {
-    logger.error(`❌ Refresh token failed: ${error.message}`);
-    throw new AppError("Invalid refresh token", 401);
+    logger.error('Failed to refresh tokens:', error.message);
+    throw new AppError('Failed to refresh tokens.', 401);
   }
 };
 
 /**
- * Verify a refresh token and return decoded payload
- * @param {string} refreshToken - JWT refresh token to verify
- * @returns {Promise<Object>} Decoded token payload
- * @throws {AppError} If token is invalid, expired or blacklisted
+ * Revoke all tokens for a user by incrementing the token version.
+ *
+ * @param {string} userId - ID of the user.
+ * @returns {Promise<void>}
+ * @throws {AppError} - If revocation fails.
  */
-export const verifyRefreshToken = async (refreshToken) => {
-  if (!refreshToken) {
-    throw new AppError('Refresh token is required', 400);
-  }
-
+export const revokeAllTokens = async (userId) => {
   try {
-    // Verify and check if token is blacklisted
-    const decoded = await verifyAndCheckToken(
-      refreshToken,
-      process.env.JWT_REFRESH_SECRET,
-      'refresh'
-    );
-
-    // Find user and validate token version
-    const user = await User.findById(decoded.id);
-    if (!user || decoded.tokenVersion !== user.tokenVersion) {
-      throw new AppError('Invalid refresh token', 401);
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new AppError('User not found.', 404);
     }
 
-    return decoded;
+    user.tokenVersion += 1;
+    await user.save();
+
+    logger.info(`✅ All tokens revoked for user ${userId}`);
   } catch (error) {
-    logger.error(`Refresh token verification failed: ${error.message}`);
-    throw new AppError(error.message || 'Invalid refresh token', 401);
+    logger.error(`❌ Error revoking tokens for user ${userId}:`, error);
+    throw new AppError('Failed to revoke tokens.', 500);
   }
+};
+
+export default {
+  generateAccessToken,
+  generateRefreshToken,
+  verifyAndCheckToken,
+  rotateRefreshToken,
+  refreshTokens,
+  revokeAllTokens,
 };

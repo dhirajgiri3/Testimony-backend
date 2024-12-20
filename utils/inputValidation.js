@@ -1,87 +1,63 @@
+// utils/inputValidation.js
 
 import AppError from './appError.js';
 
-export const validatePasswordStrength = (password) => {
-    const requirements = [
-      {
-        test: (pwd) => pwd.length >= 8,
-        message: "Password must be at least 8 characters long"
-      },
-      {
-        test: (pwd) => /[A-Z]/.test(pwd),
-        message: "Password must contain at least one uppercase letter"
-      },
-      {
-        test: (pwd) => /[a-z]/.test(pwd),
-        message: "Password must contain at least one lowercase letter"
-      },
-      {
-        test: (pwd) => /[0-9]/.test(pwd),
-        message: "Password must contain at least one number"
-      },
-      {
-        test: (pwd) => /[^A-Za-z0-9]/.test(pwd),
-        message: "Password must contain at least one special character"
-      },
-      {
-        test: (pwd) => !/\s/.test(pwd),
-        message: "Password must not contain whitespace"
-      },
-      {
-        test: (pwd) => !/(password|123456|admin)/i.test(pwd),
-        message: "Password contains common phrases and is too weak"
-      }
-    ];
-  
-    const failedRequirements = requirements
-      .filter(req => !req.test(password))
-      .map(req => req.message);
-  
-    if (failedRequirements.length > 0) {
-      throw new AppError(failedRequirements.join('. '), 400);
-    }
-  };
-
-
-export const normalizePhoneNumber = (phone) => {
-    if (!phone || typeof phone !== 'string') {
-        throw new AppError('Phone number is required and must be a string', 400);
-    }
-
-    // Remove all whitespace, dots, dashes, parentheses
-    let normalized = phone.replace(/[\s\.\-\(\)]/g, '');
-
-    // Check if it's already in E.164 format (starts with +)
-    const isE164 = normalized.startsWith('+');
-    if (isE164) {
-        normalized = normalized.substring(1);
-    }
-
-    // Remove any non-digit characters
-    normalized = normalized.replace(/\D/g, '');
-
-    // Validate basic length
-    if (normalized.length < 10 || normalized.length > 15) {
-        throw new AppError('Phone number length is invalid (must be 10-15 digits)', 400);
-    }
-
-    // Handle different country number formats
-    // For numbers without country code, assume US/Canada (1)
-    if (normalized.length === 10) {
-        normalized = '1' + normalized;
-    }
-
-    // Validate against common invalid patterns
-    if (/^0{5,}/.test(normalized) || /^1{5,}/.test(normalized)) {
-        throw new AppError('Invalid phone number pattern', 400);
-    }
-
-    // Final E.164 format validation
-    const e164Regex = /^\d{10,14}$/;
-    if (!e164Regex.test(normalized)) {
-        throw new AppError('Phone number format is invalid', 400);
-    }
-
-    // Return in E.164 format
-    return '+' + normalized;
+/**
+ * Validate password strength
+ * @param {string} password
+ */
+const validatePasswordStrength = (password) => {
+  const passwordRegex =
+    /^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])[A-Za-z\d@$!%*#?&]{8,}$/;
+  if (!passwordRegex.test(password)) {
+    throw new AppError(
+      'Password must be minimum eight characters, including at least one letter, one number, and one special character.',
+      400
+    );
+  }
 };
+
+/**
+ * Normalize phone number to E.164 format
+ * @param {string} phone
+ * @returns {string}
+ */
+const normalizePhoneNumber = (phone) => {
+  const cleaned = phone.replace(/\D/g, '');
+  if (cleaned.length === 10) {
+    return `+1${cleaned}`;
+  }
+  if (cleaned.length === 11 && cleaned.startsWith('1')) {
+    return `+${cleaned}`;
+  }
+  throw new AppError('Invalid phone number format.', 400);
+};
+
+/**
+ * Sanitize input to prevent XSS attacks
+ * @param {any} input
+ * @returns {any}
+ */
+const sanitizeInput = (input) => {
+  const escapeString = (str) =>
+    str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+  if (typeof input === 'string') {
+    return escapeString(input);
+  }
+  if (typeof input === 'object' && input !== null) {
+    const sanitizedObject = {};
+    for (const key in input) {
+      sanitizedObject[key] = sanitizeInput(input[key]);
+    }
+    return sanitizedObject;
+  }
+  return input;
+};
+
+export { validatePasswordStrength, normalizePhoneNumber, sanitizeInput };

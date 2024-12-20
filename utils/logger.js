@@ -1,39 +1,67 @@
-// /backend/utils/logger.js
+// utils/logger.js
 
-import winston from "winston";
-import "winston-daily-rotate-file";
+import winston from 'winston';
+import { format } from 'winston';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 
-const { combine, timestamp, printf, colorize, metadata } = winston.format;
+// Determine __dirname for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// Custom log format
-const logFormat = printf(({ level, message, timestamp, metadata }) => {
-  const { requestId, ...meta } = metadata;
-  const metaString = Object.keys(meta).length ? JSON.stringify(meta) : "";
-  return `${timestamp} [${level}] [RequestID: ${requestId || "N/A"}]: ${message} ${metaString}`;
-});
+// Ensure logs directory exists
+const logsDir = path.join(__dirname, '..', 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir);
+}
 
-// Create Winston logger instance
-export const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || "info",
-  format: combine(
-    metadata({ fillExcept: ["message", "level", "timestamp"] }),
-    colorize(),
-    timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
-    logFormat
-  ),
+// Define log formats
+const logFormat = format.combine(
+  format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+  format.errors({ stack: true }), // Include stack trace for errors
+  format.printf(
+    (info) => `${info.timestamp} [${info.level.toUpperCase()}]: ${info.message}${info.stack ? `\n${info.stack}` : ''}`
+  )
+);
+
+// Create Winston logger
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: logFormat,
   transports: [
-    new winston.transports.Console(),
-    new winston.transports.DailyRotateFile({
-      dirname: "logs",
-      filename: "application-%DATE%.log",
-      datePattern: "YYYY-MM-DD",
-      zippedArchive: true,
-      maxSize: "20m",
-      maxFiles: "14d",
+    // Console transport for development
+    new winston.transports.Console({
+      format: format.combine(format.colorize(), logFormat),
+      silent: process.env.NODE_ENV === 'production' ? false : false,
+    }),
+    // File transport for errors
+    new winston.transports.File({
+      filename: path.join(logsDir, 'error.log'),
+      level: 'error',
+    }),
+    // File transport for all logs
+    new winston.transports.File({
+      filename: path.join(logsDir, 'combined.log'),
     }),
   ],
   exceptionHandlers: [
-    new winston.transports.File({ filename: "logs/exceptions.log" }),
+    new winston.transports.File({
+      filename: path.join(logsDir, 'exceptions.log'),
+    }),
   ],
-  exitOnError: false,
+  rejectionHandlers: [
+    new winston.transports.File({
+      filename: path.join(logsDir, 'rejections.log'),
+    }),
+  ],
 });
+
+// Stream for morgan
+logger.stream = {
+  write: (message) => {
+    logger.info(message.trim());
+  },
+};
+
+export { logger };

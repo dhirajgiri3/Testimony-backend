@@ -1,4 +1,3 @@
-
 // src/middlewares/validators/testimonialValidator.js
 
 import { check, validationResult } from 'express-validator';

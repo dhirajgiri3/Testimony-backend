@@ -1,12 +1,16 @@
 import AppError from '../utils/appError.js';
 
 /**
- * Authorize user roles
- * @param  {...string} roles - Allowed roles
+ * Middleware to authorize user roles.
+ * Accepts either a list of roles or an array of roles.
+ * @param  {...string|Array<string>} roles - Allowed roles
  */
 export const authorize = (...roles) => {
+  // Handle case where the first argument is an array of roles
+  const allowedRoles = Array.isArray(roles[0]) ? roles[0] : roles;
+
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    if (!allowedRoles.includes(req.user.role)) {
       return next(
         new AppError('You do not have permission to perform this action', 403)
       );

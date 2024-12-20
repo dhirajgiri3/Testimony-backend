@@ -1,27 +1,26 @@
-import mongoose from 'mongoose';
-import Testimonial from "../models/Testimonial.js";
-import User from "../models/User.js";
-import {queues} from "../jobs/queues.js";
-import AppError from "../utils/appError.js";
-import { logger } from "../utils/logger.js";
-import { nanoid } from "nanoid";
-import {redis} from '../config/redis.js';
-import { sanitizeInput } from '../utils/validation.js';
-import { 
-  extractSkills, 
-  analyzeDetailedSentiment, 
-  analyzeEmotions, 
-  processTestimonialText,
-  generateTestimonialSuggestions
-} from "./aiService.js";
-import { sendEmail } from '../config/email.js';
-import metrics from '../utils/metrics.js';
+// src/services/testimonialService.js
 
-// Enhanced Redis caching wrapper
+import mongoose from 'mongoose';
+import Testimonial from '../models/Testimonial.js';
+import User from '../models/User.js';
+import { queues } from '../jobs/queues.js';
+import AppError from '../utils/appError.js';
+import { logger } from '../utils/logger.js';
+import { nanoid } from 'nanoid';
+import { redisClient } from '../config/redis.js';
+import { sanitizeInput } from '../utils/validation.js';
+import { extractSkills, analyzeSentiment } from './sentimentService.js';
+import { sendEmail } from '../config/email.js';
+import ActivityLog from '../models/ActivityLog.js';
+import { generateRecommendations } from './recommendationService.js';
+
+/**
+ * Enhanced Redis caching wrapper
+ */
 const cache = {
   async get(key) {
     try {
-      const data = await redis.get(key);
+      const data = await redisClient.get(key);
       return data ? JSON.parse(data) : null;
     } catch (error) {
       logger.warn(`Cache retrieval failed for key ${key}:`, error);
@@ -31,7 +30,7 @@ const cache = {
 
   async set(key, value, expiry = 3600) {
     try {
-      await redis.setex(key, expiry, JSON.stringify(value));
+      await redisClient.setEx(key, expiry, JSON.stringify(value));
     } catch (error) {
       logger.warn(`Cache setting failed for key ${key}:`, error);
     }
@@ -39,18 +38,23 @@ const cache = {
 
   async del(key) {
     try {
-      await redis.del(key);
+      await redisClient.del(key);
     } catch (error) {
       logger.warn(`Cache deletion failed for key ${key}:`, error);
     }
-  }
+  },
 };
 
-// Enhanced transaction wrapper
+/**
+ * Transaction wrapper for MongoDB operations.
+ *
+ * @param {Function} callback - The transactional function.
+ * @returns {Promise<any>} - Result of the transactional function.
+ */
 const withTransaction = async (callback) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const result = await callback(session);
     await session.commitTransaction();
@@ -63,73 +67,102 @@ const withTransaction = async (callback) => {
   }
 };
 
-// Metrics tracking
+/**
+ * Track application metrics.
+ *
+ * @param {string} name - Metric name.
+ * @param {number} value - Metric value.
+ * @param {Object} tags - Additional tags for the metric.
+ */
 const trackMetric = (name, value = 1, tags = {}) => {
   try {
-    metrics.increment(name, value, tags);
+    // Implement your metrics tracking logic here (e.g., Prometheus, Datadog)
+    logger.info(`Metric tracked: ${name}`, { value, tags });
   } catch (error) {
     logger.warn(`Failed to track metric ${name}:`, error);
   }
 };
 
 /**
- * Create a new testimonial request with enhanced validation and security
+ * Create a new testimonial request.
+ *
+ * @param {string} seekerId - ID of the seeker requesting the testimonial.
+ * @param {Array<string>} giverEmails - Emails of the givers.
+ * @param {string} projectDetails - Details about the project.
+ * @param {Object} additionalData - Additional metadata.
+ * @returns {Promise<Object>} - Created testimonial document.
+ * @throws {AppError} - If creation fails.
  */
-export const createTestimonialRequest = async (seekerId, giverEmails, projectDetails, additionalData = {}) => {
-  // Rate limiting check
-  await rateLimiter.checkLimit(`testimonial_create:${seekerId}`, RATE_LIMITS.TESTIMONIAL_CREATE);
+export const createTestimonialRequest = async (
+  seekerId,
+  giverEmails,
+  projectDetails,
+  additionalData = {}
+) => {
+  // Rate limiting can be implemented here if needed.
 
   // Input sanitization
-  const sanitizedEmails = giverEmails.map(email => sanitizeInput(email.toLowerCase().trim()));
+  const sanitizedEmails = giverEmails.map((email) =>
+    sanitizeInput(email.toLowerCase().trim())
+  );
   const sanitizedDetails = sanitizeInput(projectDetails);
 
   return withTransaction(async (session) => {
     const seeker = await User.findById(seekerId).session(session);
     if (!seeker) {
-      throw new AppError(ERROR_MESSAGES.SEEKER_NOT_FOUND, 404);
+      throw new AppError('Seeker not found.', 404);
     }
 
-    // Validate unique emails
-    const uniqueEmails = [...new Set(sanitizedEmails.filter(email => 
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-    ))];
+    // Validate unique and valid emails
+    const uniqueValidEmails = [
+      ...new Set(
+        sanitizedEmails.filter((email) =>
+          /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+        )
+      ),
+    ];
 
-    if (!uniqueEmails.length) {
-      throw new AppError(ERROR_MESSAGES.NO_VALID_EMAILS, 400);
+    if (!uniqueValidEmails.length) {
+      throw new AppError('No valid giver emails provided.', 400);
     }
 
-    // Create givers with enhanced verification
-    const givers = uniqueEmails.map(email => ({
+    // Create givers with verification tokens
+    const givers = uniqueValidEmails.map((email) => ({
       email,
       verificationToken: nanoid(32),
-      verificationTokenExpiry: Date.now() + 24 * 60 * 60 * 1000,
+      verificationTokenExpiry: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
       metadata: {
         platform: additionalData.platform || 'web',
-        ipAddress: additionalData.ipAddress,
-        userAgent: additionalData.userAgent
-      }
+        ipAddress: additionalData.ipAddress || 'Unknown',
+        userAgent: additionalData.userAgent || 'Unknown',
+      },
     }));
 
-    // Create testimonial with improved structure
-    const testimonial = await Testimonial.create([{
-      seeker: seekerId,
-      givers,
-      projectDetails: sanitizedDetails,
-      status: TESTIMONIAL_STATUS.PENDING,
-      metadata: {
-        source: additionalData.source || 'direct',
-        totalGivers: uniqueEmails.length,
-        platform: additionalData.platform || 'web',
-        template: additionalData.templateId,
-        createdFrom: {
-          ip: additionalData.ipAddress,
-          userAgent: additionalData.userAgent
-        }
-      }
-    }], { session });
+    // Create the testimonial
+    const testimonial = await Testimonial.create(
+      [
+        {
+          seeker: seekerId,
+          givers,
+          projectDetails: sanitizedDetails,
+          status: 'pending',
+          metadata: {
+            source: additionalData.source || 'direct',
+            totalGivers: uniqueValidEmails.length,
+            platform: additionalData.platform || 'web',
+            template: additionalData.templateId || 'default',
+            createdFrom: {
+              ip: additionalData.ipAddress || 'Unknown',
+              userAgent: additionalData.userAgent || 'Unknown',
+            },
+          },
+        },
+      ],
+      { session }
+    );
 
-    // Queue email notifications with enhanced error handling
-    const emailPromises = testimonial[0].givers.map(giver => 
+    // Queue email notifications for each giver
+    const emailPromises = testimonial[0].givers.map((giver) =>
       queues.emailQueue.add(
         'sendTestimonialRequest',
         {
@@ -137,29 +170,26 @@ export const createTestimonialRequest = async (seekerId, giverEmails, projectDet
           seekerName: `${seeker.firstName} ${seeker.lastName}`,
           verificationToken: giver.verificationToken,
           projectDetails: sanitizedDetails,
-          testimonialId: testimonial[0]._id
+          testimonialId: testimonial[0]._id,
         },
         {
           attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 0
-          },
-          removeOnComplete: true
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: true,
         }
       )
     );
 
     await Promise.allSettled(emailPromises);
 
-    // Track metrics
+    // Track metric
     trackMetric('testimonial.created', 1, {
       seekerId,
-      giverCount: uniqueEmails.length,
-      platform: additionalData.platform
+      giverCount: uniqueValidEmails.length,
+      platform: additionalData.platform || 'web',
     });
 
-    // Clear relevant caches
+    // Invalidate relevant caches
     await cache.del(`seeker_testimonials:${seekerId}`);
 
     return testimonial[0];
@@ -167,624 +197,415 @@ export const createTestimonialRequest = async (seekerId, giverEmails, projectDet
 };
 
 /**
- * Submit Testimonial with transactional support and enhanced AI analysis
+ * Submit a testimonial by a giver.
+ *
+ * @param {string} testimonialId - ID of the testimonial.
+ * @param {string} giverToken - Verification token of the giver.
+ * @param {Object} submissionData - Data submitted by the giver.
+ * @returns {Promise<Object>} - Updated testimonial document.
+ * @throws {AppError} - If submission fails.
  */
 export const submitTestimonial = async (
   testimonialId,
   giverToken,
   { testimonialText, rating, relationship, skills, media = [] }
 ) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    // Enhanced input validation
-    if (typeof testimonialText !== 'string' || !testimonialText.trim()) {
-      throw new AppError("Valid testimonial text is required", 400);
+  return withTransaction(async (session) => {
+    // Validate input
+    if (!testimonialText || typeof testimonialText !== 'string') {
+      throw new AppError('Valid testimonial text is required.', 400);
     }
 
     if (rating && (typeof rating !== 'number' || rating < 1 || rating > 5)) {
-      throw new AppError("Rating must be a number between 1 and 5", 400);
+      throw new AppError('Rating must be a number between 1 and 5.', 400);
     }
 
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
     if (!testimonial) {
-      throw new AppError("Testimonial request not found", 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
     const giver = testimonial.givers.find(
-      (g) => g.verificationToken === giverToken && 
-      g.verificationTokenExpiry > Date.now()
+      (g) =>
+        g.verificationToken === giverToken &&
+        g.verificationTokenExpiry > Date.now()
     );
 
     if (!giver) {
-      throw new AppError("Invalid or expired giver token", 401);
+      throw new AppError('Invalid or expired giver token.', 401);
     }
 
-    if (giver.verificationStatus !== "pending") {
-      throw new AppError(
-        `Testimonial has already been ${giver.verificationStatus}`, 
-        400
-      );
+    if (giver.verificationStatus !== 'pending') {
+      throw new AppError('Testimonial has already been processed.', 400);
     }
 
-    // Parallel AI analysis with timeout and retry logic
-    const aiAnalysisPromises = [
-      extractSkills(testimonialText),
-      analyzeSentiment(testimonialText),
-      analyzeEmotions(testimonialText),
-      categorizeProject(testimonial.projectDetails)
-    ].map(promise => 
-      Promise.race([
-        promise,
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('AI Analysis timeout')), AI_TIMEOUT)
-        )
-      ])
-    );
-
-    let [skillsExtracted, sentimentScore, emotionAnalysis, categories] = await Promise.allSettled(aiAnalysisPromises)
-      .then(results => results.map(result => result.status === 'fulfilled' ? result.value : null));
-
-    // Fallback values if AI analysis fails
-    skillsExtracted = skillsExtracted || [];
-    sentimentScore = sentimentScore || 0;
-    emotionAnalysis = emotionAnalysis || {};
-    categories = categories || [];
+    // Perform AI analysis
+    const skillsExtracted = await extractSkills([testimonialText]);
+    const sentimentScores = await analyzeSentiment([testimonialText]);
+    const sentimentScore = sentimentScores[0] || 0;
 
     // Update giver details
     giver.testimonial = testimonialText.trim();
     if (rating) giver.rating = rating;
     if (relationship) giver.relationship = relationship;
-    if (skills) giver.skills = skills;
+    if (skills && Array.isArray(skills)) giver.skills = skills;
     giver.media = media;
     giver.isApproved = true;
-    giver.verificationStatus = "approved";
+    giver.verificationStatus = 'approved';
     giver.submittedAt = Date.now();
 
     // Update testimonial metadata
-    testimonial.skills = [...new Set([...testimonial.skills, ...skillsExtracted])];
+    testimonial.skills = [
+      ...new Set([
+        ...(testimonial.skills || []),
+        ...skillsExtracted.map((s) => s.skill),
+      ]),
+    ];
     testimonial.sentimentScore = sentimentScore;
-    testimonial.emotionAnalysis = {
-      ...testimonial.emotionAnalysis,
-      ...emotionAnalysis
-    };
-    testimonial.categories = [...new Set([...testimonial.categories, ...categories])];
-    testimonial.status = testimonial.givers.every(g => g.testimonial) ? "completed" : "in-progress";
+    testimonial.status = testimonial.givers.every((g) => g.testimonial)
+      ? 'completed'
+      : 'in-progress';
     testimonial.lastUpdated = Date.now();
-
-    // Process the testimonial text
-    const analysis = await processTestimonialText(testimonialText);
-    // Assign analysis results to testimonial
-    testimonial.analysis = analysis;
 
     await testimonial.save({ session });
 
-    await session.commitTransaction();
-    session.endSession();
-
-    // Trigger notification for testimonial submission
-    queues.notificationQueue.add(
-      "testimonialSubmitted",
+    // Queue notification for testimonial submission
+    await queues.notificationQueue.add(
+      'testimonialSubmitted',
       {
         seekerId: testimonial.seeker,
         testimonialId: testimonial._id,
-        giverEmail: giver.email
+        giverEmail: giver.email,
       },
       { priority: 2 }
     );
 
-    logger.info({
-      message: "Testimonial submitted successfully",
-      testimonialId,
-      giverEmail: giver.email,
-      status: testimonial.status
-    });
-
-    return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    logger.error({
-      message: "Failed to submit testimonial",
-      testimonialId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-};
-
-/**
- * Approve a testimonial giver's submission
- */
-export const approveTestimonial = async (testimonialId, giverId, adminId, comments = "") => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
-    if (!testimonial) {
-      throw new AppError("Testimonial not found", 404);
-    }
-
-    const giver = testimonial.givers.id(giverId);
-    if (!giver) {
-      throw new AppError("Giver not found in this testimonial", 404);
-    }
-
-    if (giver.verificationStatus !== "pending") {
-      throw new AppError("Testimonial has already been processed", 400);
-    }
-
-    giver.verificationStatus = "approved";
-    giver.isApproved = true;
-    giver.submittedAt = Date.now();
-    giver.approvalHistory.push({
-      status: "approved",
-      approvedBy: adminId,
-      comments,
-      approvedAt: Date.now()
-    });
-
-    // Update overall testimonial status if all givers are approved
-    const allApproved = testimonial.givers.every(g => g.verificationStatus === "approved");
-    if (allApproved) {
-      testimonial.status = "completed";
-    }
-
-    await testimonial.save({ session });
-
-    // Notify seeker about approval
-    queues.notificationQueue.add("testimonialApproved", {
+    // Track metric
+    trackMetric('testimonial.submitted', 1, {
       seekerId: testimonial.seeker,
-      testimonialId,
-      giverEmail: giver.email,
+      rating,
     });
 
-    await session.commitTransaction();
-    session.endSession();
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
 
     logger.info({
-      message: "Testimonial approved successfully",
+      message: 'Testimonial submitted successfully.',
       testimonialId,
-      giverId,
-      adminId
+      giverEmail: giver.email,
+      status: testimonial.status,
     });
 
     return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    logger.error({
-      message: "Failed to approve testimonial",
-      testimonialId,
-      giverId,
-      adminId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
+  });
 };
 
 /**
- * Reject a testimonial giver's submission
+ * Reject a testimonial giver's submission.
+ *
+ * @param {string} testimonialId - ID of the testimonial.
+ * @param {string} giverId - ID of the giver.
+ * @param {string} adminId - ID of the admin performing the rejection.
+ * @param {string} comments - Optional comments.
+ * @returns {Promise<Object>} - Updated testimonial document.
+ * @throws {AppError} - If rejection fails.
  */
-export const rejectTestimonial = async (testimonialId, giverId, adminId, comments = "") => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
+export const rejectTestimonial = async (
+  testimonialId,
+  giverId,
+  adminId,
+  comments = ''
+) => {
+  return withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
     if (!testimonial) {
-      throw new AppError("Testimonial not found", 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
     const giver = testimonial.givers.id(giverId);
     if (!giver) {
-      throw new AppError("Giver not found in this testimonial", 404);
+      throw new AppError('Giver not found in this testimonial.', 404);
     }
 
-    if (giver.verificationStatus !== "pending") {
-      throw new AppError("Testimonial has already been processed", 400);
+    if (giver.verificationStatus !== 'pending') {
+      throw new AppError('Testimonial has already been processed.', 400);
     }
 
-    giver.verificationStatus = "rejected";
+    // Update giver status
+    giver.verificationStatus = 'rejected';
     giver.isApproved = false;
     giver.approvalHistory.push({
-      status: "rejected",
+      status: 'rejected',
       approvedBy: adminId,
       comments,
-      approvedAt: Date.now()
+      approvedAt: Date.now(),
     });
 
-    // Update overall testimonial status if any giver is rejected
-    testimonial.status = "reported";
+    // Update testimonial status
+    testimonial.status = 'reported';
 
     await testimonial.save({ session });
 
-    // Notify seeker about rejection
-    queues.notificationQueue.add("testimonialRejected", {
+    // Queue notification for testimonial rejection
+    await queues.notificationQueue.add('testimonialRejected', {
       seekerId: testimonial.seeker,
       testimonialId,
       giverEmail: giver.email,
       comments,
     });
 
-    await session.commitTransaction();
-    session.endSession();
+    // Track metric
+    trackMetric('testimonial.rejected', 1, {
+      seekerId: testimonial.seeker,
+      adminId,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
 
     logger.info({
-      message: "Testimonial rejected successfully",
+      message: 'Testimonial rejected successfully.',
       testimonialId,
       giverId,
-      adminId
+      adminId,
     });
 
     return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    logger.error({
-      message: "Failed to reject testimonial",
-      testimonialId,
-      giverId,
-      adminId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
+  });
 };
 
 /**
- * Bulk process testimonials (Approve or Reject)
+ * Report a testimonial for inappropriate content or other issues.
+ *
+ * @param {string} testimonialId - ID of the testimonial.
+ * @param {Object} reportData - Data related to the report.
+ * @returns {Promise<Object>} - Updated testimonial document.
+ * @throws {AppError} - If reporting fails.
  */
-export const bulkProcessTestimonials = async (testimonialIds, { action, reason, adminId }) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const testimonials = await Testimonial.find({ _id: { $in: testimonialIds } }).session(session);
-    
-    for (const testimonial of testimonials) {
-      for (const giver of testimonial.givers) {
-        if (giver.verificationStatus === "pending") {
-          if (action === "approve") {
-            giver.verificationStatus = "approved";
-            giver.isApproved = true;
-            giver.approvalHistory.push({
-              status: "approved",
-              approvedBy: adminId,
-              comments: reason,
-              approvedAt: Date.now()
-            });
-          } else if (action === "reject") {
-            giver.verificationStatus = "rejected";
-            giver.isApproved = false;
-            giver.approvalHistory.push({
-              status: "rejected",
-              approvedBy: adminId,
-              comments: reason,
-              approvedAt: Date.now()
-            });
-          }
-        }
-      }
+export const reportTestimonial = async (testimonialId, reportData) => {
+  const {
+    reason,
+    description,
+    evidence = [],
+    reportedBy = 'anonymous',
+  } = reportData;
 
-      // Update testimonial status
-      if (action === "approve") {
-        const allApproved = testimonial.givers.every(g => g.verificationStatus === "approved");
-        if (allApproved) {
-          testimonial.status = "completed";
-        }
-      } else if (action === "reject") {
-        testimonial.status = "reported";
-      }
-
-      await testimonial.save({ session });
-
-      // Notify seeker
-      queues.notificationQueue.add(action === "approve" ? "testimonialApproved" : "testimonialRejected", {
-        seekerId: testimonial.seeker,
-        testimonialId: testimonial._id,
-        giverEmails: testimonial.givers.map(g => g.email),
-        comments: reason
-      });
-    }
-
-    await session.commitTransaction();
-    session.endSession();
-
-    logger.info({
-      message: `Bulk ${action} completed successfully`,
-      testimonialIds,
-      adminId
-    });
-
-    return { message: `Bulk ${action} completed successfully` };
-
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    logger.error({
-      message: `Failed to bulk ${action} testimonials`,
-      testimonialIds,
-      adminId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-};
-
-/**
- * Get testimonial statistics with insights
- * @param {string} seekerId
- * @returns {Promise<Object>}
- */
-export const getTestimonialStats = async (seekerId) => {
-  try {
-    const stats = await Testimonial.aggregate([
-      { $match: { seeker: mongoose.Types.ObjectId(seekerId) } },
-      {
-        $facet: {
-          overview: [
-            {
-              $group: {
-                _id: null,
-                total: { $sum: 1 },
-                approved: {
-                  $sum: {
-                    $cond: [{ $eq: ["$status", "completed"] }, 1, 0]
-                  }
-                },
-                pending: {
-                  $sum: {
-                    $cond: [{ $eq: ["$status", "pending"] }, 1, 0]
-                  }
-                },
-                avgSentiment: { $avg: "$sentimentScore" },
-                totalGivers: { $sum: { $size: "$givers" } }
-              }
-            }
-          ],
-          categoryDistribution: [
-            { $unwind: "$categories" },
-            {
-              $group: {
-                _id: "$categories",
-                count: { $sum: 1 }
-              }
-            },
-            { $sort: { count: -1 } }
-          ],
-          monthlyTrend: [
-            {
-              $group: {
-                _id: {
-                  year: { $year: "$createdAt" },
-                  month: { $month: "$createdAt" }
-                },
-                count: { $sum: 1 },
-                avgSentiment: { $avg: "$sentimentScore" }
-              }
-            },
-            { $sort: { "_id.year": 1, "_id.month": 1 } }
-          ]
-        }
-      }
-    ]);
-
-    return {
-      overview: stats[0].overview[0] || {
-        total: 0,
-        approved: 0,
-        pending: 0,
-        avgSentiment: 0,
-        totalGivers: 0
-      },
-      categoryDistribution: stats[0].categoryDistribution,
-      monthlyTrend: stats[0].monthlyTrend
-    };
-  } catch (error) {
-    logger.error('Error getting testimonial stats:', error);
-    throw new AppError('Failed to fetch testimonial statistics', 500);
-  }
-};
-
-/**
- * Generate testimonial certificate
- * @param {string} testimonialId
- * @param {string} template
- * @param {Object} customization
- * @returns {Promise<Object>}
- */
-export const generateTestimonialCertificate = async (
-  testimonialId,
-  template = 'default',
-  customization = {}
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const testimonial = await Testimonial.findById(testimonialId)
-      .populate('seeker', 'firstName lastName')
-      .session(session);
-
+  return withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
     if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
-    // Generate certificate content
-    const certificateData = {
-      testimonialId,
-      seekerName: `${testimonial.seeker.firstName} ${testimonial.seeker.lastName}`,
-      givers: testimonial.givers.filter(g => g.isApproved).map(g => ({
-        name: g.name,
-        testimonial: g.testimonial,
-        submittedAt: g.submittedAt
-      })),
-      projectDetails: testimonial.projectDetails,
-      skills: testimonial.skills,
-      generatedAt: new Date(),
-      template,
-      ...customization
+    // Create report entry
+    const report = {
+      reason: sanitizeInput(reason),
+      description: sanitizeInput(description),
+      evidence: evidence.map((e) => sanitizeInput(e)),
+      reportedBy,
+      reportedAt: Date.now(),
+      status: 'pending',
     };
 
-    // Generate certificate (implementation depends on your certificate generation service)
-    const certificate = await generateCertificate(certificateData);
-
-    // Update testimonial with certificate info
-    testimonial.certificates = testimonial.certificates || [];
-    testimonial.certificates.push({
-      url: certificate.url,
-      generatedAt: new Date(),
-      template
-    });
+    testimonial.reports = testimonial.reports || [];
+    testimonial.reports.push(report);
+    testimonial.status = 'reported';
 
     await testimonial.save({ session });
-    await session.commitTransaction();
 
-    return certificate;
+    // Queue notification for admin review
+    await queues.notificationQueue.add('testimonialReported', {
+      testimonialId,
+      reportedBy,
+      reason,
+      evidenceCount: evidence.length,
+    });
 
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error('Error generating certificate:', error);
-    throw new AppError('Failed to generate certificate', 500);
-  } finally {
-    session.endSession();
-  }
+    // Track metric
+    trackMetric('testimonial.reported', 1, {
+      seekerId: testimonial.seeker,
+      reportedBy,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
+
+    logger.info({
+      message: 'Testimonial reported successfully.',
+      testimonialId,
+      reportedBy,
+      reason,
+    });
+
+    return testimonial;
+  });
 };
 
 /**
- * Archive testimonial
- * @param {string} testimonialId
- * @param {Object} options
- * @returns {Promise<Object>}
+ * Archive a testimonial.
+ *
+ * @param {string} testimonialId - ID of the testimonial to archive.
+ * @param {string} userId - ID of the user performing the archiving.
+ * @returns {Promise<Object>} - Archived testimonial document.
+ * @throws {AppError} - If archiving fails.
  */
-export const archiveTestimonial = async (testimonialId, { userId, reason }) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
+export const archiveTestimonial = async (testimonialId, userId) => {
+  return withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
     if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
     testimonial.archived = true;
-    testimonial.archivedAt = new Date();
+    testimonial.archivedAt = Date.now();
     testimonial.archivedBy = userId;
-    testimonial.archiveReason = reason;
+    testimonial.archiveReason = sanitizeInput(
+      testimonial.archiveReason || 'No reason provided.'
+    );
 
     await testimonial.save({ session });
 
-    // Log archive action
-    await ActivityLog.create([{
-      user: userId,
-      action: 'TESTIMONIAL_ARCHIVED',
-      details: {
-        testimonialId,
-        reason
-      }
-    }], { session });
+    // Log the archiving action
+    await ActivityLog.create(
+      [
+        {
+          user: userId,
+          action: 'TESTIMONIAL_ARCHIVED',
+          details: {
+            testimonialId,
+            reason: testimonial.archiveReason,
+          },
+        },
+      ],
+      { session }
+    );
 
-    await session.commitTransaction();
+    // Track metric
+    trackMetric('testimonial.archived', 1, {
+      seekerId: testimonial.seeker,
+      adminId: userId,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
+
+    logger.info({
+      message: 'Testimonial archived successfully.',
+      testimonialId,
+      userId,
+      reason: testimonial.archiveReason,
+    });
+
     return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error('Error archiving testimonial:', error);
-    throw new AppError('Failed to archive testimonial', 500);
-  } finally {
-    session.endSession();
-  }
+  });
 };
 
 /**
- * Restore archived testimonial
- * @param {string} testimonialId
- * @param {string} userId
- * @returns {Promise<Object>}
+ * Restore an archived testimonial.
+ *
+ * @param {string} testimonialId - ID of the testimonial to restore.
+ * @param {string} userId - ID of the user performing the restoration.
+ * @returns {Promise<Object>} - Restored testimonial document.
+ * @throws {AppError} - If restoration fails.
  */
 export const restoreTestimonial = async (testimonialId, userId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
+  return withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
     if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
     if (!testimonial.archived) {
-      throw new AppError('Testimonial is not archived', 400);
+      throw new AppError('Testimonial is not archived.', 400);
     }
 
     testimonial.archived = false;
     testimonial.archivedAt = null;
     testimonial.archivedBy = null;
     testimonial.archiveReason = null;
-    testimonial.restoredAt = new Date();
+    testimonial.restoredAt = Date.now();
     testimonial.restoredBy = userId;
 
     await testimonial.save({ session });
 
-    // Log restore action
-    await ActivityLog.create([{
-      user: userId,
-      action: 'TESTIMONIAL_RESTORED',
-      details: { testimonialId }
-    }], { session });
+    // Log the restoration action
+    await ActivityLog.create(
+      [
+        {
+          user: userId,
+          action: 'TESTIMONIAL_RESTORED',
+          details: {
+            testimonialId,
+          },
+        },
+      ],
+      { session }
+    );
 
-    await session.commitTransaction();
+    // Track metric
+    trackMetric('testimonial.restored', 1, {
+      seekerId: testimonial.seeker,
+      adminId: userId,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
+
+    logger.info({
+      message: 'Testimonial restored successfully.',
+      testimonialId,
+      userId,
+    });
+
     return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error('Error restoring testimonial:', error);
-    throw new AppError('Failed to restore testimonial', 500);
-  } finally {
-    session.endSession();
-  }
+  });
 };
 
 /**
- * Share testimonial with enhanced security and tracking
- * @param {string} testimonialId
- * @param {string} platform
- * @param {Object} options
- * @returns {Promise<Object>}
+ * Share a testimonial on various platforms.
+ *
+ * @param {string} testimonialId - ID of the testimonial to share.
+ * @param {string} platform - Platform to share on (e.g., twitter, linkedin).
+ * @param {Object} options - Additional sharing options.
+ * @returns {Promise<Object>} - Details of the shared testimonial.
+ * @throws {AppError} - If sharing fails.
  */
-export const shareTestimonial = async (testimonialId, platform, options = {}) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
+export const shareTestimonial = async (
+  testimonialId,
+  platform,
+  options = {}
+) => {
+  return withTransaction(async (session) => {
     const testimonial = await Testimonial.findById(testimonialId)
       .populate('seeker', 'firstName lastName')
       .session(session);
-
     if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
+      throw new AppError('Testimonial not found.', 404);
     }
 
     if (!testimonial.isPublic) {
-      throw new AppError('Cannot share private testimonial', 403);
+      throw new AppError('Cannot share private testimonial.', 403);
     }
 
-    // Generate secure sharing token
-    const shareToken = crypto.randomBytes(32).toString('hex');
-    
+    // Generate a secure sharing token
+    const shareToken = nanoid(32);
+
     // Create share record
     const share = {
       token: shareToken,
       platform,
-      sharedAt: new Date(),
-      expiresAt: options.expiresAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days default
-      options
+      sharedAt: Date.now(),
+      expiresAt: options.expiresAt || Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days default
+      options,
     };
 
     testimonial.shares = testimonial.shares || [];
@@ -792,47 +613,166 @@ export const shareTestimonial = async (testimonialId, platform, options = {}) =>
 
     await testimonial.save({ session });
 
-    // Generate sharing URLs based on platform
+    // Generate sharing URL based on platform
     const shareUrl = generateShareUrl(testimonial, shareToken, platform);
 
-    // Log share action
-    await ActivityLog.create([{
-      user: options.userId,
-      action: 'TESTIMONIAL_SHARED',
-      details: {
-        testimonialId,
-        platform,
-        shareToken
-      }
-    }], { session });
+    // Log the sharing action
+    await ActivityLog.create(
+      [
+        {
+          user: options.userId || 'system',
+          action: 'TESTIMONIAL_SHARED',
+          details: {
+            testimonialId,
+            platform,
+            shareToken,
+            shareUrl,
+          },
+        },
+      ],
+      { session }
+    );
 
-    await session.commitTransaction();
+    // Track metric
+    trackMetric('testimonial.shared', 1, {
+      seekerId: testimonial.seeker,
+      platform,
+    });
+
+    // Queue notification if needed
+    if (platform === 'email') {
+      queues.emailQueue.add(
+        'sendTestimonialShareEmail',
+        {
+          to: testimonial.seeker.email,
+          shareUrl,
+          testimonialId,
+        },
+        { priority: 3 }
+      );
+    }
+
+    logger.info({
+      message: 'Testimonial shared successfully.',
+      testimonialId,
+      platform,
+      shareUrl,
+    });
 
     return {
       shareUrl,
       shareToken,
-      expiresAt: share.expiresAt
+      expiresAt: share.expiresAt,
     };
-
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error('Error sharing testimonial:', error);
-    throw new AppError('Failed to share testimonial', 500);
-  } finally {
-    session.endSession();
-  }
+  });
 };
 
-// Helper function to generate share URL
+/**
+ * Delete a testimonial with comprehensive data cleanup.
+ *
+ * @param {string} testimonialId - ID of the testimonial to delete.
+ * @param {string} userId - ID of the user requesting deletion.
+ * @returns {Promise<Object>} - Confirmation of deletion.
+ * @throws {AppError} - If deletion fails.
+ */
+export const deleteTestimonial = async (testimonialId, userId) => {
+  return withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(
+      session
+    );
+    if (!testimonial) {
+      throw new AppError('Testimonial not found.', 404);
+    }
+
+    // Verify user permissions
+    if (testimonial.seeker.toString() !== userId) {
+      throw new AppError('Unauthorized to delete this testimonial.', 403);
+    }
+
+    // Check testimonial status
+    if (testimonial.status === 'completed') {
+      throw new AppError('Cannot delete a completed testimonial.', 400);
+    }
+
+    // Remove associated data if any (e.g., certificates)
+    if (testimonial.certificates && testimonial.certificates.length > 0) {
+      // Implement certificate deletion logic if certificates are stored externally
+      // Example: Delete from AWS S3 or another storage service
+      testimonial.certificates.forEach((cert) => {
+        queues.exportQueue.add(
+          'deleteCertificate',
+          { url: cert.url },
+          { removeOnComplete: true }
+        );
+      });
+    }
+
+    // Remove the testimonial
+    await testimonial.remove({ session });
+
+    // Log the deletion
+    await ActivityLog.create(
+      [
+        {
+          user: userId,
+          action: 'TESTIMONIAL_DELETED',
+          details: {
+            testimonialId,
+            timestamp: Date.now(),
+          },
+        },
+      ],
+      { session }
+    );
+
+    // Track metric
+    trackMetric('testimonial.deleted', 1, {
+      seekerId: testimonial.seeker,
+      userId,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
+
+    logger.info({
+      message: 'Testimonial deleted successfully.',
+      testimonialId,
+      userId,
+    });
+
+    return {
+      message: 'Testimonial deleted successfully.',
+      testimonialId,
+    };
+  });
+};
+
+/**
+ * Helper function to generate sharing URLs based on platform.
+ *
+ * @param {Object} testimonial - The testimonial document.
+ * @param {string} token - The sharing token.
+ * @param {string} platform - The platform to share on.
+ * @returns {string} - The generated sharing URL.
+ */
 const generateShareUrl = (testimonial, token, platform) => {
   const baseUrl = process.env.CLIENT_URL;
-  const shareUrl = `${baseUrl}/testimonials/share/${token}`;
+  const sharePath = `/testimonials/share/${token}`;
+  const shareUrl = `${baseUrl}${sharePath}`;
 
-  switch (platform) {
+  switch (platform.toLowerCase()) {
     case 'twitter':
-      return `https://twitter.com/intent/tweet?url=${encodeURIComponent(shareUrl)}`;
+      return `https://twitter.com/intent/tweet?url=${encodeURIComponent(
+        shareUrl
+      )}&text=${encodeURIComponent(`Check out this testimonial: ${shareUrl}`)}`;
     case 'linkedin':
-      return `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
+      return `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(
+        shareUrl
+      )}`;
+    case 'facebook':
+      return `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(
+        shareUrl
+      )}`;
     case 'email':
       return shareUrl;
     default:
@@ -841,327 +781,339 @@ const generateShareUrl = (testimonial, token, platform) => {
 };
 
 /**
- * Delete testimonial with enhanced validation and cleanup
- * @param {string} testimonialId - ID of testimonial to delete
- * @param {string} userId - ID of user requesting deletion
- * @returns {Promise<Object>}
+ * Enqueue analytics update job.
+ *
+ * @param {string} seekerId - ID of the seeker.
+ * @returns {Promise<void>}
  */
-export const deleteTestimonial = async (testimonialId, userId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    // Validate input
-    if (!mongoose.Types.ObjectId.isValid(testimonialId)) {
-      throw new AppError('Invalid testimonial ID', 400);
-    }
-
-    const testimonial = await Testimonial.findById(testimonialId)
-      .populate('seeker', '_id')
-      .session(session);
-
-    if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
-    }
-
-    // Check if user has permission to delete
-    if (testimonial.seeker._id.toString() !== userId) {
-      throw new AppError('Unauthorized to delete this testimonial', 403);
-    }
-
-    // Check if testimonial can be deleted
-    if (testimonial.status === 'completed') {
-      throw new AppError('Cannot delete completed testimonials', 400);
-    }
-
-    // Log deletion attempt
-    logger.info({
-      message: 'Attempting to delete testimonial',
-      testimonialId,
-      userId,
-      status: testimonial.status
-    });
-
-    // Remove associated data (if any)
-    if (testimonial.certificates && testimonial.certificates.length > 0) {
-      // Clean up any stored certificates
-      await Promise.all(testimonial.certificates.map(cert => 
-        queues.cleanupQueue.add('deleteCertificate', { url: cert.url })
-      ));
-    }
-
-    // Delete the testimonial
-    await testimonial.remove({ session });
-
-    // Create activity log
-    await ActivityLog.create([{
-      user: userId,
-      action: 'TESTIMONIAL_DELETED',
-      details: {
-        testimonialId,
-        status: testimonial.status,
-        giverCount: testimonial.givers.length
-      }
-    }], { session });
-
-    await session.commitTransaction();
-
-    logger.info({
-      message: 'Testimonial deleted successfully',
-      testimonialId,
-      userId
-    });
-
-    return { 
-      message: 'Testimonial deleted successfully',
-      deletedAt: new Date(),
-      testimonialId
-    };
-
-  } catch (error) {
-    await session.abortTransaction();
-    
-    logger.error({
-      message: 'Error deleting testimonial',
-      testimonialId,
-      userId,
-      error: error.message,
-      stack: error.stack
-    });
-
-    throw error instanceof AppError 
-      ? error 
-      : new AppError('Failed to delete testimonial', 500);
-
-  } finally {
-    session.endSession();
-  }
-};
-
-// Helper function to generate certificate (implement based on your needs)
-const generateCertificate = async (data) => {
-  // Implement certificate generation logic
-  // This could involve using a PDF generation library, HTML to PDF conversion, etc.
-  // Return the certificate URL or data
-  return {
-    url: 'https://example.com/certificates/123',
-    generatedAt: new Date()
-  };
+export const enqueueAnalyticsUpdate = async (seekerId) => {
+  await queues.analyticsQueue.add(
+    'updateAnalytics',
+    { seekerId },
+    { priority: 2, attempts: 3, backoff: { type: 'exponential', delay: 5000 } }
+  );
 };
 
 /**
- * Process testimonial submission with enhanced validation and AI analysis
- * @param {Object} data - Testimonial submission data
- * @returns {Promise<Object>} Processed testimonial
+ * Retrieve testimonials with pagination and filtering.
+ *
+ * @param {Object} options - Pagination and sorting options.
+ * @param {number} options.page - Current page number.
+ * @param {number} options.limit - Number of testimonials per page.
+ * @param {Object} filters - Filtering criteria.
+ * @param {string} [filters.seekerId] - ID of the seeker.
+ * @param {string} [filters.status] - Status of the testimonial.
+ * @param {boolean} [filters.isPublic] - Public visibility of the testimonial.
+ * @returns {Promise<Object>} - Paginated testimonials data.
+ * @throws {AppError} - If retrieval fails.
  */
-export const processTestimonialSubmission = async (data) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+export const getTestimonials = async (options, filters) => {
+  const {
+    page = 1,
+    limit = 10,
+    sortBy = 'createdAt',
+    order = 'desc',
+  } = options;
+  const skip = (page - 1) * limit;
+
+  const query = {};
+
+  if (filters.seekerId) {
+    query.seeker = filters.seekerId;
+  }
+
+  if (filters.status) {
+    query.status = filters.status;
+  }
+
+  if (typeof filters.isPublic === 'boolean') {
+    query.isPublic = filters.isPublic;
+  }
 
   try {
-    const { testimonialId, giverToken, testimonialText, media = [], rating, relationship } = data;
+    const [total, testimonials] = await Promise.all([
+      Testimonial.countDocuments(query),
+      Testimonial.find(query)
+        .sort({ [sortBy]: order === 'desc' ? -1 : 1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('seeker', 'firstName lastName')
+        .exec(),
+    ]);
 
-    // Input validation
-    if (!testimonialId || !giverToken || !testimonialText?.trim()) {
-      throw new AppError('Missing required submission data', 400);
-    }
+    return {
+      total,
+      page,
+      limit,
+      testimonials,
+    };
+  } catch (error) {
+    logger.error('Error retrieving testimonials:', error);
+    throw new AppError('Failed to retrieve testimonials.', 500);
+  }
+};
 
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
-    if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
-    }
+/**
+ * Export testimonials as a CSV file.
+ *
+ * @param {Object} filters - Filtering criteria for export.
+ * @param {string} [filters.seekerId] - ID of the seeker.
+ * @param {string} [filters.status] - Status of the testimonial.
+ * @param {boolean} [filters.isPublic] - Public visibility of the testimonial.
+ * @returns {Promise<string>} - CSV formatted string of testimonials.
+ * @throws {AppError} - If export fails.
+ */
+export const exportTestimonials = async (filters) => {
+  const query = {};
 
-    // Validate giver
-    const giver = testimonial.givers.find(g => 
-      g.verificationToken === giverToken && 
-      g.verificationTokenExpiry > Date.now()
-    );
+  if (filters.seekerId) {
+    query.seeker = filters.seekerId;
+  }
 
-    if (!giver) {
-      throw new AppError('Invalid or expired submission token', 401);
-    }
+  if (filters.status) {
+    query.status = filters.status;
+  }
 
-    // Perform parallel AI analysis with timeout protection
-    const aiAnalysisPromises = [
-      Promise.race([
-        extractSkills(testimonialText),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Skills extraction timeout')), AI_TIMEOUT))
-      ]),
-      Promise.race([
-        analyzeSentiment(testimonialText),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Sentiment analysis timeout')), AI_TIMEOUT))
-      ]),
-      Promise.race([
-        analyzeEmotions(testimonialText),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Emotion analysis timeout')), AI_TIMEOUT))
-      ])
+  if (typeof filters.isPublic === 'boolean') {
+    query.isPublic = filters.isPublic;
+  }
+
+  try {
+    const testimonials = await Testimonial.find(query)
+      .populate('seeker', 'firstName lastName email')
+      .exec();
+
+    const csvHeaders = [
+      'Testimonial ID',
+      'Seeker Name',
+      'Seeker Email',
+      'Status',
+      'Created At',
+      'Last Updated',
     ];
 
-    const [skills, sentiment, emotions] = await Promise.allSettled(aiAnalysisPromises)
-      .then(results => results.map(r => r.status === 'fulfilled' ? r.value : null));
+    const csvRows = testimonials.map((t) => [
+      t._id,
+      `${t.seeker.firstName} ${t.seeker.lastName}`,
+      t.seeker.email,
+      t.status,
+      t.createdAt.toISOString(),
+      t.lastUpdated.toISOString(),
+    ]);
 
-    // Update testimonial data
-    Object.assign(giver, {
-      testimonial: testimonialText.trim(),
-      media,
-      rating,
-      relationship,
-      submittedAt: new Date(),
-      skills: skills || [],
-      sentimentScore: sentiment?.score || 0,
-      emotions: emotions || {},
-      metadata: {
-        wordCount: testimonialText.trim().split(/\s+/).length,
-        submissionPlatform: 'web',
-        hasMedia: media.length > 0
-      }
-    });
+    const csvContent = [csvHeaders, ...csvRows]
+      .map((row) => row.join(','))
+      .join('\n');
 
-    // Update testimonial status
-    testimonial.status = testimonial.givers.every(g => g.testimonial) 
-      ? 'completed' 
-      : 'in-progress';
-
-    await testimonial.save({ session });
-    await session.commitTransaction();
-
-    // Queue analytics update
-    await enqueueAnalyticsUpdate(testimonial.seeker);
-
-    // Notify seeker
-    await queues.notificationQueue.add(
-      'testimonialSubmitted',
-      {
-        seekerId: testimonial.seeker,
-        testimonialId,
-        giverEmail: giver.email
-      },
-      { priority: 2 }
-    );
-
-    return testimonial;
-
+    logger.info(`Exported ${testimonials.length} testimonials as CSV.`);
+    return csvContent;
   } catch (error) {
-    await session.abortTransaction();
-    logger.error('Testimonial submission processing failed:', error);
-    throw error instanceof AppError ? error : new AppError('Submission processing failed', 500);
-  } finally {
-    session.endSession();
+    logger.error('Error exporting testimonials:', error);
+    throw new AppError('Failed to export testimonials.', 500);
   }
 };
 
 /**
- * Report a testimonial with enhanced validation and evidence handling
- * @param {string} testimonialId
- * @param {Object} reportData
- * @returns {Promise<Object>}
+ * Search testimonials based on a query string.
+ *
+ * @param {string} queryStr - The search query.
+ * @param {Object} options - Pagination and sorting options.
+ * @param {number} options.page - Current page number.
+ * @param {number} options.limit - Number of testimonials per page.
+ * @returns {Promise<Object>} - Paginated search results.
+ * @throws {AppError} - If search fails.
  */
-export const reportTestimonial = async (testimonialId, reportData) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+export const searchTestimonials = async (queryStr, options) => {
+  const {
+    page = 1,
+    limit = 10,
+    sortBy = 'createdAt',
+    order = 'desc',
+  } = options;
+  const skip = (page - 1) * limit;
 
   try {
-    const {
-      reason,
-      description,
-      evidence = [],
-      reportedBy = 'anonymous',
-      reportedAt = new Date(),
-      ipAddress,
-      userAgent
-    } = reportData;
-
-    // Validate input
-    if (!reason?.trim()) {
-      throw new AppError('Report reason is required', 400);
-    }
-
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
-    if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
-    }
-
-    // Create report record
-    const report = {
-      reason: reason.trim(),
-      description: description?.trim(),
-      evidence,
-      reportedBy,
-      reportedAt,
-      status: 'pending',
-      metadata: {
-        ipAddress,
-        userAgent,
-        platform: userAgent ? 'web' : 'api'
-      }
+    const regex = new RegExp(queryStr, 'i');
+    const query = {
+      $or: [
+        { 'seeker.firstName': regex },
+        { 'seeker.lastName': regex },
+        { projectDetails: regex },
+        { 'givers.email': regex },
+      ],
     };
 
-    testimonial.reports = testimonial.reports || [];
-    testimonial.reports.push(report);
+    const [total, testimonials] = await Promise.all([
+      Testimonial.countDocuments(query),
+      Testimonial.find(query)
+        .sort({ [sortBy]: order === 'desc' ? -1 : 1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('seeker', 'firstName lastName')
+        .exec(),
+    ]);
 
-    // Update testimonial status if this is the first report
-    if (!testimonial.status.includes('reported')) {
-      testimonial.previousStatus = testimonial.status;
-      testimonial.status = 'reported';
-    }
-
-    await testimonial.save({ session });
-
-    // Notify administrators
-    await queues.notificationQueue.add(
-      'testimonialReported',
-      {
-        testimonialId,
-        reportedBy,
-        reason,
-        evidence: evidence.length
-      },
-      { priority: 1 }
-    );
-
-    await session.commitTransaction();
-
-    logger.info('Testimonial reported:', {
-      testimonialId,
-      reportedBy,
-      reason
-    });
-
-    return testimonial;
-
+    return {
+      total,
+      page,
+      limit,
+      testimonials,
+    };
   } catch (error) {
-    await session.abortTransaction();
-    logger.error('Error reporting testimonial:', error);
-    throw error instanceof AppError ? error : new AppError('Failed to report testimonial', 500);
-  } finally {
-    session.endSession();
+    logger.error('Error searching testimonials:', error);
+    throw new AppError('Failed to search testimonials.', 500);
   }
 };
 
 /**
- * Get testimonials for seeker with advanced filtering and pagination
- * @param {string} seekerId
- * @param {Object} filters
- * @param {Object} options
- * @returns {Promise<Object>}
+ * Generate and send personalized recommendations to the seeker.
+ *
+ * @param {string} seekerId - ID of the seeker.
+ * @returns {Promise<void>}
  */
-export const getTestimonialsForSeeker = async (seekerId, filters = {}, options = {}) => {
+export const sendPersonalizedRecommendations = async (seekerId) => {
+  const seeker = await User.findById(seekerId);
+  if (!seeker) {
+    throw new AppError('Seeker not found.', 404);
+  }
+
+  const analyticsData = await getAnalyticsForSeeker(seekerId);
+  const recommendations = await generateRecommendations(analyticsData);
+
+  await sendEmail({
+    to: seeker.email,
+    subject: 'Your Personalized Recommendations',
+    html: recommendations,
+  });
+
+  logger.info(`Sent personalized recommendations to seeker ${seekerId}`);
+};
+
+/**
+ * Retrieve analytics data for a seeker.
+ *
+ * @param {string} seekerId - ID of the seeker.
+ * @returns {Promise<Object>} - Analytics data.
+ */
+const getAnalyticsForSeeker = async (seekerId) => {
+  // Implement the logic to gather analytics data for the seeker
+  // This might include fetching user activity, testimonials, engagement metrics, etc.
+  const analytics = {
+    // Example analytics data
+    activity: await getUserActivity(seekerId),
+    testimonials: await Testimonial.find({ seeker: seekerId }),
+    // Add more relevant analytics as needed
+  };
+  return analytics;
+};
+
+// Modify approveTestimonial to send recommendations after approval
+export const approveTestimonial = async (
+  testimonialId,
+  giverId,
+  adminId,
+  comments = ''
+) => {
+  const testimonial = await withTransaction(async (session) => {
+    const testimonial = await Testimonial.findById(testimonialId).session(session);
+    if (!testimonial) {
+      throw new AppError('Testimonial not found.', 404);
+    }
+
+    const giver = testimonial.givers.id(giverId);
+    if (!giver) {
+      throw new AppError('Giver not found in this testimonial.', 404);
+    }
+
+    if (giver.verificationStatus !== 'pending') {
+      throw new AppError('Testimonial has already been processed.', 400);
+    }
+
+    // Update giver status
+    giver.verificationStatus = 'approved';
+    giver.isApproved = true;
+    giver.approvalHistory.push({
+      status: 'approved',
+      approvedBy: adminId,
+      comments,
+      approvedAt: Date.now(),
+    });
+
+    // Check if all givers are approved
+    const allApproved = testimonial.givers.every(
+      (g) => g.verificationStatus === 'approved'
+    );
+    if (allApproved) {
+      testimonial.status = 'completed';
+      // Send personalized recommendations when all givers are approved
+      await sendPersonalizedRecommendations(testimonial.seeker);
+    }
+
+    await testimonial.save({ session });
+
+    // Queue notification for testimonial approval
+    await queues.notificationQueue.add('testimonialApproved', {
+      seekerId: testimonial.seeker,
+      testimonialId,
+      giverEmail: giver.email,
+    });
+
+    // Track metric
+    trackMetric('testimonial.approved', 1, {
+      seekerId: testimonial.seeker,
+      adminId,
+    });
+
+    // Invalidate relevant caches
+    await cache.del(`seeker_testimonials:${testimonial.seeker}`);
+
+    logger.info({
+      message: 'Testimonial approved successfully.',
+      testimonialId,
+      giverId,
+      adminId,
+    });
+
+    return testimonial;
+  });
+
+  return testimonial;
+};
+
+/**
+ * Retrieve testimonials for a specific seeker with advanced filtering and pagination options.
+ *
+ * @param {string} seekerId - ID of the seeker.
+ * @param {Object} filters - Filtering criteria.
+ * @param {string} [filters.status] - Status of the testimonial.
+ * @param {string} [filters.search] - Search term.
+ * @param {string} [filters.startDate] - Start date for filtering.
+ * @param {string} [filters.endDate] - End date for filtering.
+ * @param {string} [filters.category] - Category of the testimonial.
+ * @param {number} [filters.rating] - Rating of the testimonial.
+ * @param {boolean} [filters.isPublic] - Public visibility of the testimonial.
+ * @param {Object} options - Pagination and sorting options.
+ * @param {number} [options.page=1] - Current page number.
+ * @param {number} [options.limit=10] - Number of testimonials per page.
+ * @param {string} [options.sortBy='createdAt'] - Field to sort by.
+ * @param {string} [options.order='desc'] - Sort order ('asc' or 'desc').
+ * @returns {Promise<Object>} - Paginated testimonials data with statistics.
+ * @throws {AppError} - If retrieval fails.
+ */
+export const getTestimonialsForSeeker = async (
+  seekerId,
+  filters = {},
+  options = {}
+) => {
   try {
-    const {
-      status,
-      search,
-      startDate,
-      endDate,
-      category,
-      rating,
-      isPublic
-    } = filters;
+    const { status, search, startDate, endDate, category, rating, isPublic } =
+      filters;
 
     const {
       page = 1,
       limit = 10,
       sortBy = 'createdAt',
-      order = 'desc'
+      order = 'desc',
     } = options;
 
     // Build query
@@ -1183,7 +1135,7 @@ export const getTestimonialsForSeeker = async (seekerId, filters = {}, options =
       query.$or = [
         { 'givers.testimonial': { $regex: search, $options: 'i' } },
         { projectDetails: { $regex: search, $options: 'i' } },
-        { 'givers.skills': { $in: [new RegExp(search, 'i')] } }
+        { 'givers.skills': { $in: [new RegExp(search, 'i')] } },
       ];
     }
 
@@ -1198,18 +1150,27 @@ export const getTestimonialsForSeeker = async (seekerId, filters = {}, options =
         .limit(limit)
         .populate('seeker', 'firstName lastName email')
         .lean(),
-      Testimonial.countDocuments(query)
+      Testimonial.countDocuments(query),
     ]);
 
     // Calculate statistics
     const stats = {
       total,
-      approved: await Testimonial.countDocuments({ ...query, status: 'completed' }),
-      pending: await Testimonial.countDocuments({ ...query, status: 'pending' }),
-      averageRating: testimonials.reduce((acc, t) => {
-        const ratings = t.givers.map(g => g.rating).filter(Boolean);
-        return ratings.length ? acc + (ratings.reduce((a, b) => a + b, 0) / ratings.length) : acc;
-      }, 0) / (testimonials.length || 1)
+      approved: await Testimonial.countDocuments({
+        ...query,
+        status: 'completed',
+      }),
+      pending: await Testimonial.countDocuments({
+        ...query,
+        status: 'pending',
+      }),
+      averageRating:
+        testimonials.reduce((acc, t) => {
+          const ratings = t.givers.map((g) => g.rating).filter(Boolean);
+          return ratings.length
+            ? acc + ratings.reduce((a, b) => a + b, 0) / ratings.length
+            : acc;
+        }, 0) / (testimonials.length || 1),
     };
 
     return {
@@ -1218,163 +1179,32 @@ export const getTestimonialsForSeeker = async (seekerId, filters = {}, options =
         currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: limit
+        itemsPerPage: limit,
       },
-      stats
+      stats,
     };
-
   } catch (error) {
     logger.error('Error fetching testimonials:', error);
-    throw error instanceof AppError ? error : new AppError('Failed to fetch testimonials', 500);
-  }
-};
-
-/**
- * Toggle testimonial visibility with enhanced validation and logging
- * @param {string} testimonialId - ID of the testimonial
- * @param {string} userId - ID of user making the change
- * @returns {Promise<Object>} Updated testimonial
- */
-export const toggleTestimonialVisibility = async (testimonialId, userId) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const testimonial = await Testimonial.findById(testimonialId).session(session);
-    
-    if (!testimonial) {
-      throw new AppError('Testimonial not found', 404);
-    }
-
-    // Verify testimonial is in valid state for visibility toggle
-    if (testimonial.status !== 'completed') {
-      throw new AppError('Only completed testimonials can have visibility toggled', 400);
-    }
-
-    // Toggle visibility
-    testimonial.isPublic = !testimonial.isPublic;
-    testimonial.lastUpdated = new Date();
-    testimonial.lastUpdatedBy = userId;
-
-    // Add visibility change to history
-    testimonial.visibilityHistory = testimonial.visibilityHistory || [];
-    testimonial.visibilityHistory.push({
-      status: testimonial.isPublic,
-      changedBy: userId,
-      changedAt: new Date(),
-      reason: testimonial.isPublic ? 'Made public' : 'Made private'
-    });
-
-    await testimonial.save({ session });
-
-    // Log visibility change
-    await ActivityLog.create([{
-      user: userId,
-      action: 'TESTIMONIAL_VISIBILITY_CHANGED',
-      details: {
-        testimonialId,
-        newStatus: testimonial.isPublic,
-        timestamp: new Date()
-      }
-    }], { session });
-
-    // Queue notification if making public
-    if (testimonial.isPublic) {
-      await queues.notificationQueue.add(
-        'testimonialVisibilityChanged',
-        {
-          seekerId: testimonial.seeker,
-          testimonialId,
-          isPublic: true
-        },
-        { priority: 3 }
-      );
-    }
-
-    await session.commitTransaction();
-
-    logger.info({
-      message: 'Testimonial visibility toggled',
-      testimonialId,
-      userId,
-      isPublic: testimonial.isPublic
-    });
-
-    return testimonial;
-
-  } catch (error) {
-    await session.abortTransaction();
-    logger.error({
-      message: 'Error toggling testimonial visibility',
-      testimonialId,
-      userId,
-      error: error.message,
-      stack: error.stack
-    });
-    throw error instanceof AppError 
-      ? error 
-      : new AppError('Failed to toggle testimonial visibility', 500);
-  } finally {
-    session.endSession();
-  }
-};
-
-export const getTestimonials = async (seekerId, { page = 1, limit = 10 }) => {
-  const skip = (page - 1) * limit;
-
-  const testimonials = await Testimonial.find({ seeker: seekerId })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-
-  const total = await Testimonial.countDocuments({ seeker: seekerId });
-
-  return {
-    testimonials,
-    pagination: {
-      currentPage: page,
-      totalPages: Math.ceil(total / limit),
-      totalItems: total,
-      itemsPerPage: limit,
-    },
-  };
-};
-
-export const bulkApproveRejectTestimonials = async (testimonialIds, action, reason, adminId) => {
-  try {
-    const operations = testimonialIds.map(id => ({
-      updateOne: {
-        filter: { _id: id },
-        update: {
-          status: action === 'approve' ? 'approved' : 'rejected',
-          adminId,
-          reason,
-        },
-      },
-    }));
-
-    await Testimonial.bulkWrite(operations);
-    // Log actions
-  } catch (error) {
-    logger.error('Bulk approve/reject failed:', error);
-    throw new AppError('Bulk processing failed', 500);
+    throw error instanceof AppError
+      ? error
+      : new AppError('Failed to fetch testimonials', 500);
   }
 };
 
 export default {
   createTestimonialRequest,
   submitTestimonial,
-  processTestimonialSubmission,
-  reportTestimonial,
-  getTestimonialsForSeeker,
   approveTestimonial,
   rejectTestimonial,
-  bulkProcessTestimonials,
-  getTestimonialStats,
-  approveTestimonial,
-  generateTestimonialCertificate,
+  reportTestimonial,
   archiveTestimonial,
   restoreTestimonial,
-  shareTestimonial
+  shareTestimonial,
+  deleteTestimonial,
+  enqueueAnalyticsUpdate,
+  getTestimonials,
+  exportTestimonials,
+  searchTestimonials,
+  sendPersonalizedRecommendations,
+  getTestimonialsForSeeker,
 };
-

@@ -1,17 +1,24 @@
-import { redis } from "../config/redis.js";
-import AppError from "../utils/appError.js";
-import { logger } from "../utils/logger.js";
+// src/middlewares/cache.js
+
+import { redisClient } from '../config/redis.js';
+import { logger } from '../utils/logger.js';
+import AppError from '../utils/appError.js';
 
 /**
- * Enhanced cache middleware with bypass option
+ * Cache middleware using Redis with bypass option.
+ *
+ * @param {number} duration - Cache duration in seconds.
+ * @returns {Function} - Express middleware function.
  */
 export const cache = (duration) => async (req, res, next) => {
-  if (req.method !== "GET" || req.headers["x-bypass-cache"]) return next();
+  if (req.method !== 'GET' || req.headers['x-bypass-cache']) {
+    return next();
+  }
 
   const key = `cache:${req.originalUrl}`;
 
   try {
-    const cachedData = await redis.get(key);
+    const cachedData = await redisClient.get(key);
     if (cachedData) {
       logger.info(`✅ Cache hit for key: ${key}`);
       return res.status(200).json(JSON.parse(cachedData));
@@ -20,7 +27,7 @@ export const cache = (duration) => async (req, res, next) => {
     res.originalJson = res.json;
     res.json = async (body) => {
       if (body) {
-        await redis.setex(key, duration, JSON.stringify(body));
+        await redisClient.setEx(key, duration, JSON.stringify(body));
         logger.info(`✅ Cache set for key: ${key}`);
       }
       return res.originalJson(body);
@@ -28,121 +35,82 @@ export const cache = (duration) => async (req, res, next) => {
 
     next();
   } catch (error) {
-    logger.error("❌ Cache middleware error:", error);
-    next(new AppError("Cache service unavailable", 503));
+    logger.error(`❌ Cache middleware error for key ${key}:`, error);
+    next(new AppError('Cache service unavailable', 503));
   }
 };
 
-export const createCacheManager = (prefix = "", defaultTTL = 3600) => {
+/**
+ * Creates a dedicated cache manager with a specific prefix.
+ *
+ * @param {string} prefix - Prefix for cache keys.
+ * @param {number} defaultTTL - Default Time-To-Live for cache entries.
+ * @returns {Object} - Cache manager with utility functions.
+ */
+export const createCacheManager = (prefix = '', defaultTTL = 3600) => {
   const buildKey = (key) => (prefix ? `${prefix}:${key}` : key);
 
   return {
-    async get(key, defaultValue = null) {
-      try {
-        const data = await redis.get(buildKey(key));
-        return data ? JSON.parse(data) : defaultValue;
-      } catch (error) {
-        logger.error(`Cache get error for ${key}:`, error);
-        return defaultValue;
-      }
-    },
-
-    async set(key, value, ttl = defaultTTL) {
-      try {
-        await redis.setex(buildKey(key), ttl, JSON.stringify(value));
-        return true;
-      } catch (error) {
-        logger.error(`Cache set error for ${key}:`, error);
-        return false;
-      }
-    },
-
-    async exists(key) {
-      try {
-        return await redis.exists(buildKey(key));
-      } catch (error) {
-        logger.error(`Cache exists error for ${key}:`, error);
-        return false;
-      }
-    },
-
-    async delete(key) {
-      try {
-        await redis.del(buildKey(key));
-        return true;
-      } catch (error) {
-        logger.error(`Cache delete error for ${key}:`, error);
-        return false;
-      }
-    },
-
+    /**
+     * Retrieves data from cache or executes callback to set cache.
+     *
+     * @param {string} key - Cache key.
+     * @param {Function} callback - Function to execute if cache miss.
+     * @param {number} ttl - Time-To-Live for the cache entry.
+     * @returns {Promise<Object>} - Cached or newly set data.
+     */
     async getOrSet(key, callback, ttl = defaultTTL) {
       const cacheKey = buildKey(key);
       try {
-        const cached = await redis.get(cacheKey);
+        const cached = await redisClient.get(cacheKey);
         if (cached) return JSON.parse(cached);
 
         const value = await callback();
         if (value !== null && value !== undefined) {
-          await redis.setex(cacheKey, ttl, JSON.stringify(value));
+          await redisClient.setEx(cacheKey, ttl, JSON.stringify(value));
+          logger.info(`✅ Cache set for key: ${cacheKey}`);
         }
         return value;
       } catch (error) {
-        logger.error(`Cache getOrSet error for ${key}:`, error);
+        logger.error(`❌ Cache getOrSet error for key ${cacheKey}:`, error);
         return await callback(); // Fallback to callback on cache error
       }
     },
 
-    async clearPattern(pattern) {
+    /**
+     * Deletes a cache entry by key.
+     *
+     * @param {string} key - Cache key to delete.
+     * @returns {Promise<boolean>} - True if deletion was successful.
+     */
+    async delete(key) {
+      const cacheKey = buildKey(key);
       try {
-        const keys = await redis.keys(buildKey(pattern));
-        if (keys.length > 0) {
-          await redis.del(...keys);
-          logger.info(
-            `Cleared ${keys.length} keys matching pattern: ${pattern}`
-          );
-        }
+        await redisClient.del(cacheKey);
+        logger.info(`✅ Cache deleted for key: ${cacheKey}`);
         return true;
       } catch (error) {
-        logger.error(`Cache clear pattern error for ${pattern}:`, error);
+        logger.error(`❌ Cache delete error for key ${cacheKey}:`, error);
         return false;
       }
     },
 
-    async increment(key, value = 1) {
-      try {
-        return await redis.incrby(buildKey(key), value);
-      } catch (error) {
-        logger.error(`Cache increment error for ${key}:`, error);
-        return null;
-      }
-    },
-
-    generateKey: (...args) => args.filter((arg) => arg !== undefined).join(":"),
+    /**
+     * Generates a cache key by joining multiple parts.
+     *
+     * @param  {...string} parts - Parts of the cache key.
+     * @returns {string} - Generated cache key.
+     */
+    generateKey: (...parts) =>
+      parts.filter((part) => part !== undefined).join(':'),
   };
 };
 
-export const cacheManager = createCacheManager("testimony");
+export const cacheManager = createCacheManager('testimony');
 
 // Export simplified helper functions
 export const {
-  get: getCache,
-  set: setCache,
+  getOrSet,
   delete: delCache,
   generateKey: generateCacheKey,
 } = cacheManager;
-
-/**
- * Invalidate cache for specific keys
- */
-export const invalidateCache = async (keys) => {
-  try {
-    if (!Array.isArray(keys)) {
-      keys = [keys];
-    }
-    await Promise.all(keys.map((key) => redis.del(key)));
-    logger.info(`✅ Cache invalidated for keys: ${keys.join(", ")}`);
-  } catch (error) {
-    logger.error("❌ Cache invalidation error:", error);
-  }
-};
